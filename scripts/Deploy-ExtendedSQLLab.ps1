@@ -242,26 +242,71 @@ if (Test-Path $appDscFile) {
 #endregion
 
 #region Wait for VMs to boot
-Write-Header "Waiting for VMs to start"
-Start-Sleep -Seconds 60
+Write-Header "Waiting for VMs to fully boot"
 
-# Restart network adapters on all new SQL VMs
-foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
-    Write-Host "Restarting network on $($sql.Name)..."
-    try {
-        Invoke-Command -VMName $sql.Name -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $winCreds -ErrorAction SilentlyContinue
-    } catch {
-        Write-Warning "Could not restart network on $($sql.Name): $_"
+# With 15 VMs starting simultaneously, we need to wait for each VM to be ready
+# for PowerShell Direct (integration services + OS fully booted)
+function Wait-ForVMReady {
+    param (
+        [string]$VMName,
+        [PSCredential]$Credential,
+        [int]$TimeoutSeconds = 600
+    )
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        try {
+            $result = Invoke-Command -VMName $VMName -ScriptBlock { hostname } -Credential $Credential -ErrorAction Stop
+            if ($result) {
+                return $true
+            }
+        } catch {
+            # "The credential is invalid" is misleading - it often means the VM isn't ready yet
+        }
+        Start-Sleep -Seconds 10
+    }
+    return $false
+}
+
+Write-Host "Waiting for VMs to become responsive (this may take 3-5 minutes with 15 VMs)..."
+Write-Host "Note: 'The credential is invalid' during boot is normal - it means the VM isn't ready for PowerShell Direct yet."
+Write-Host ""
+
+$readyCount = 0
+$allVMNames = ($sqlServers | Select-Object -First $SqlServerCount | ForEach-Object { $_.Name }) + ($appServers | Select-Object -First $AppServerCount | ForEach-Object { $_.Name })
+
+foreach ($vmName in $allVMNames) {
+    Write-Host "  Waiting for $vmName..." -NoNewline
+    $ready = Wait-ForVMReady -VMName $vmName -Credential $winCreds -TimeoutSeconds 600
+    if ($ready) {
+        $readyCount++
+        Write-Host " READY" -ForegroundColor Green
+    } else {
+        Write-Host " TIMEOUT (will retry later)" -ForegroundColor Yellow
     }
 }
 
-foreach ($app in $appServers | Select-Object -First $AppServerCount) {
-    Write-Host "Restarting network on $($app.Name)..."
+Write-Host ""
+Write-Host "VMs ready: $readyCount / $($allVMNames.Count)"
+
+if ($readyCount -eq 0) {
+    Write-Error @"
+No VMs became responsive. Possible causes:
+1. The differencing disks may have a different Administrator password than expected.
+   Expected: Administrator / JS123!!
+   Verify by opening Hyper-V Manager and trying to connect to a VM console.
+2. VMs may have failed to boot. Check Hyper-V Manager for VM states.
+3. Integration Services may not be enabled. Check VM settings.
+"@
+    Stop-Transcript
+    exit 1
+}
+
+# Restart network adapters on all ready VMs
+Write-Host "Restarting network adapters..."
+foreach ($vmName in $allVMNames) {
     try {
-        Invoke-Command -VMName $app.Name -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $winCreds -ErrorAction SilentlyContinue
-    } catch {
-        Write-Warning "Could not restart network on $($app.Name): $_"
-    }
+        Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $winCreds -ErrorAction SilentlyContinue
+    } catch { }
 }
 
 Start-Sleep -Seconds 30
@@ -277,14 +322,22 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
         if ($hostname -ne $vmName) {
             Write-Host "Renaming $hostname to $vmName..."
             Invoke-Command -VMName $vmName -ScriptBlock { Rename-Computer -NewName $using:vmName -Restart } -Credential $winCreds
+        } else {
+            Write-Host "  $vmName already has correct hostname."
         }
     } catch {
         Write-Warning "Could not rename $vmName : $_"
     }
 }
 
-# Wait for reboots
-Start-Sleep -Seconds 60
+# Wait for reboots to complete
+Write-Host "Waiting for reboots (90 seconds)..."
+Start-Sleep -Seconds 90
+
+# Re-verify VMs are back after rename reboot
+foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
+    Wait-ForVMReady -VMName $sql.Name -Credential $winCreds -TimeoutSeconds 120 | Out-Null
+}
 #endregion
 
 #region Configure SQL Server Instances
@@ -523,14 +576,14 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
     }
 
     $roleAssignments = az role assignment list --resource-group $resourceGroup --query "[?principalType=='ServicePrincipal']" -o json 2>$null | ConvertFrom-Json
-    $requiredRoles = @('Contributor', 'Azure Connected Machine Onboarding', 'Azure Connected Machine Resource Administrator')
+    $requiredRoles = @('Contributor', 'Owner', 'Azure Connected Machine Onboarding', 'Azure Connected Machine Resource Administrator')
     $vmPrincipalId = (az vm show --resource-group $resourceGroup --name "$namingPrefix-Client" --query "identity.principalId" -o tsv 2>$null)
 
     if ($vmPrincipalId) {
         $vmRoles = $roleAssignments | Where-Object { $_.principalId -eq $vmPrincipalId } | Select-Object -ExpandProperty roleDefinitionName
         $hasPermission = $vmRoles | Where-Object { $_ -in $requiredRoles }
         if ($hasPermission) {
-            Write-Host "  Client VM identity has role: $($hasPermission -join ', ')" -ForegroundColor Green
+            Write-Host "  Client VM identity has sufficient role: $($hasPermission -join ', ')" -ForegroundColor Green
         } else {
             Write-Warning @"
   Client VM managed identity does NOT have Arc onboarding permissions!
