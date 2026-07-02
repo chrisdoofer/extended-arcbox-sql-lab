@@ -1,0 +1,186 @@
+# yaml-language-server: $schema=https://aka.ms/configuration-dsc-schema/0.2
+# Extended ArcBox SQL Lab - 10 SQL Server VMs using differencing disks
+# Each VM uses a differencing disk from the parent SQL VHD to save storage
+properties:
+  resources:
+    # SQL Server 01 - ERP Database Server (Finance)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL01
+      directives:
+        description: Configure VM namingPrefixStage-SQL01 - ERP/Finance SQL Server
+      settings:
+        Name: namingPrefixStage-SQL01
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL01.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 02 - CRM Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL02
+      directives:
+        description: Configure VM namingPrefixStage-SQL02 - CRM SQL Server
+      settings:
+        Name: namingPrefixStage-SQL02
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL02.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 03 - HR/Payroll Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL03
+      directives:
+        description: Configure VM namingPrefixStage-SQL03 - HR/Payroll SQL Server
+      settings:
+        Name: namingPrefixStage-SQL03
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL03.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 04 - Inventory/Warehouse Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL04
+      directives:
+        description: Configure VM namingPrefixStage-SQL04 - Inventory SQL Server
+      settings:
+        Name: namingPrefixStage-SQL04
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL04.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 05 - E-Commerce Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL05
+      directives:
+        description: Configure VM namingPrefixStage-SQL05 - E-Commerce SQL Server
+      settings:
+        Name: namingPrefixStage-SQL05
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL05.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 06 - Reporting/Analytics Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL06
+      directives:
+        description: Configure VM namingPrefixStage-SQL06 - Reporting/Analytics SQL Server
+      settings:
+        Name: namingPrefixStage-SQL06
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL06.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 07 - Document Management Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL07
+      directives:
+        description: Configure VM namingPrefixStage-SQL07 - Document Mgmt SQL Server
+      settings:
+        Name: namingPrefixStage-SQL07
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL07.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 08 - Legacy LOB Application Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL08
+      directives:
+        description: Configure VM namingPrefixStage-SQL08 - Legacy LOB SQL Server
+      settings:
+        Name: namingPrefixStage-SQL08
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL08.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 09 - DevTest/Staging Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL09
+      directives:
+        description: Configure VM namingPrefixStage-SQL09 - DevTest SQL Server
+      settings:
+        Name: namingPrefixStage-SQL09
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL09.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # SQL Server 10 - Compliance/Audit Database Server
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-SQL10
+      directives:
+        description: Configure VM namingPrefixStage-SQL10 - Compliance/Audit SQL Server
+      settings:
+        Name: namingPrefixStage-SQL10
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-SQL10.vhdx
+        ProcessorCount: 2
+        StartupMemory: '4GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+  configurationVersion: 0.2.0

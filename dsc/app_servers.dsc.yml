@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=https://aka.ms/configuration-dsc-schema/0.2
+# Extended ArcBox SQL Lab - Application Servers
+# These VMs host demo applications that connect to the SQL servers
+# Uses Windows Server 2022 differencing disks from the ArcBox-Win2K22 parent VHD
+properties:
+  resources:
+    # App Server 01 - ERP Web Frontend (connects to SQL01)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-APP01
+      directives:
+        description: Configure VM namingPrefixStage-APP01 - ERP Web App Server
+      settings:
+        Name: namingPrefixStage-APP01
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-APP01.vhdx
+        ProcessorCount: 2
+        StartupMemory: '2GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # App Server 02 - CRM Application (connects to SQL02)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-APP02
+      directives:
+        description: Configure VM namingPrefixStage-APP02 - CRM App Server
+      settings:
+        Name: namingPrefixStage-APP02
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-APP02.vhdx
+        ProcessorCount: 2
+        StartupMemory: '2GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # App Server 03 - HR Portal (connects to SQL03)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-APP03
+      directives:
+        description: Configure VM namingPrefixStage-APP03 - HR Portal App Server
+      settings:
+        Name: namingPrefixStage-APP03
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-APP03.vhdx
+        ProcessorCount: 2
+        StartupMemory: '2GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # App Server 04 - E-Commerce Web Tier (connects to SQL04 & SQL05)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-APP04
+      directives:
+        description: Configure VM namingPrefixStage-APP04 - E-Commerce App Server
+      settings:
+        Name: namingPrefixStage-APP04
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-APP04.vhdx
+        ProcessorCount: 2
+        StartupMemory: '2GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+    # App Server 05 - Reporting/BI Portal (connects to SQL06)
+    - resource: HyperVDsc/VMHyperV
+      id: namingPrefixStage-APP05
+      directives:
+        description: Configure VM namingPrefixStage-APP05 - Reporting App Server
+      settings:
+        Name: namingPrefixStage-APP05
+        SwitchName: 'InternalNATSwitch'
+        VhdPath: F:\Virtual Machines\namingPrefixStage-APP05.vhdx
+        ProcessorCount: 2
+        StartupMemory: '2GB'
+        RestartIfNeeded: true
+        State: Running
+        Generation: 2
+        Path: F:\Virtual Machines
+        EnableGuestService: true
+        SecureBoot: true
+
+  configurationVersion: 0.2.0
