@@ -274,23 +274,46 @@ function Wait-ForVMReady {
         [PSCredential]$Credential,
         [int]$TimeoutSeconds = 600
     )
+    Write-Host "" # newline after -NoNewline
+    Write-Host "    Using credential: $($Credential.UserName)" -ForegroundColor Gray
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $attempt = 0
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        $attempt++
         try {
             $result = Invoke-Command -VMName $VMName -ScriptBlock { hostname } -Credential $Credential -ErrorAction Stop
             if ($result) {
+                Write-Host "    Responded: $result (attempt $attempt)" -ForegroundColor Gray
                 return $true
             }
         } catch {
-            # "The credential is invalid" is misleading - it often means the VM isn't ready yet
+            if ($attempt -le 3 -or $attempt % 6 -eq 0) {
+                Write-Host "    Attempt $attempt failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
         }
         Start-Sleep -Seconds 10
     }
+    Write-Host "    Timed out after $attempt attempts" -ForegroundColor Red
     return $false
 }
 
 Write-Host "Waiting for VMs to become responsive (this may take 3-5 minutes with 15 VMs)..."
-Write-Host "Note: 'The credential is invalid' during boot is normal - it means the VM isn't ready for PowerShell Direct yet."
+Write-Host ""
+
+# Quick sanity check: verify credential works on first SQL VM before proceeding
+Write-Host "Sanity check - testing credential on first SQL VM..." -ForegroundColor Cyan
+Write-Host "  Credential username: $($winCreds.UserName)"
+Write-Host "  Target VM: $($sqlServers[0].Name)"
+try {
+    $testResult = Invoke-Command -VMName $sqlServers[0].Name -ScriptBlock { hostname } -Credential $winCreds -ErrorAction Stop
+    Write-Host "  SUCCESS: Got hostname '$testResult'" -ForegroundColor Green
+} catch {
+    Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Troubleshooting: Try running this manually:" -ForegroundColor Yellow
+    Write-Host "    `$cred = New-Object PSCredential('$($winCreds.UserName)', (ConvertTo-SecureString '$nestedWindowsPassword' -AsPlainText -Force))" -ForegroundColor Yellow
+    Write-Host "    Invoke-Command -VMName '$($sqlServers[0].Name)' -ScriptBlock { hostname } -Credential `$cred" -ForegroundColor Yellow
+}
 Write-Host ""
 
 $readyCount = 0
