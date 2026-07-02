@@ -369,7 +369,8 @@ function Wait-ForVMReady {
             }
         } catch {
             if ($attempt -le 3 -or $attempt % 6 -eq 0) {
-                Write-Host "    Attempt $attempt: $($_.Exception.Message)" -ForegroundColor DarkYellow
+                $errMsg = $_.Exception.Message
+                Write-Host "    Attempt ${attempt}: $errMsg" -ForegroundColor DarkYellow
             }
         }
         Start-Sleep -Seconds 10
