@@ -515,10 +515,48 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
         exit 1
     }
 
+    # --- Verify RBAC: Managed identity needs 'Azure Connected Machine Onboarding' or 'Contributor' ---
+    Write-Host "  Verifying RBAC permissions for Arc onboarding..."
+    $clientVmIdentity = (Invoke-RestMethod -Uri 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/' -Method GET -Headers @{Metadata='true'} -ErrorAction SilentlyContinue)
+    if (-not $clientVmIdentity) {
+        Write-Warning "Could not query VM metadata for managed identity. Proceeding anyway (may fail if permissions are missing)."
+    }
+
+    $roleAssignments = az role assignment list --resource-group $resourceGroup --query "[?principalType=='ServicePrincipal']" -o json 2>$null | ConvertFrom-Json
+    $requiredRoles = @('Contributor', 'Azure Connected Machine Onboarding', 'Azure Connected Machine Resource Administrator')
+    $vmPrincipalId = (az vm show --resource-group $resourceGroup --name "$namingPrefix-Client" --query "identity.principalId" -o tsv 2>$null)
+
+    if ($vmPrincipalId) {
+        $vmRoles = $roleAssignments | Where-Object { $_.principalId -eq $vmPrincipalId } | Select-Object -ExpandProperty roleDefinitionName
+        $hasPermission = $vmRoles | Where-Object { $_ -in $requiredRoles }
+        if ($hasPermission) {
+            Write-Host "  Client VM identity has role: $($hasPermission -join ', ')" -ForegroundColor Green
+        } else {
+            Write-Warning @"
+  Client VM managed identity does NOT have Arc onboarding permissions!
+  Current roles: $($vmRoles -join ', ')
+  Required (one of): $($requiredRoles -join ', ')
+
+  To fix, run from a privileged session:
+    az role assignment create --assignee $vmPrincipalId --role 'Azure Connected Machine Onboarding' --resource-group $resourceGroup
+    az role assignment create --assignee $vmPrincipalId --role 'Azure Connected Machine Resource Administrator' --resource-group $resourceGroup
+"@
+            $continueChoice = Read-Host "Continue anyway? (y/n)"
+            if ($continueChoice -ne 'y') {
+                Write-Host "Aborting. Fix permissions and re-run."
+                Stop-Transcript
+                exit 1
+            }
+        }
+    } else {
+        Write-Warning "  Could not determine Client VM principal ID. Ensure managed identity is assigned."
+    }
+
     # Opt out of automatic SQL extension deployment (we'll do it manually)
     az tag create --resource-id "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup" --tags ArcSQLServerExtensionDeployment=Disabled 2>&1 | Out-Null
 
     # Onboard all SQL VMs (refresh token every 5 VMs to avoid expiry)
+    # NOTE: Parameter passing uses comma-separated syntax to match ArcBox's working pattern
     $vmCounter = 0
     foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
         $vmName = $sql.Name
@@ -536,14 +574,8 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
             # Copy and run Arc agent install script
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
-            Invoke-Command -VMName $vmName -ScriptBlock {
-                powershell -File C:\ArcBox\installArcAgent.ps1 `
-                    -accessToken $using:accessToken `
-                    -tenantId $using:tenantId `
-                    -subscriptionId $using:subscriptionId `
-                    -resourceGroup $using:resourceGroup `
-                    -azureLocation $using:azureLocation
-            } -Credential $winCreds -ErrorAction Stop
+            # Use the same comma-separated parameter pattern as the base ArcBox script
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential $winCreds -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
@@ -562,14 +594,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
         try {
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
-            Invoke-Command -VMName $vmName -ScriptBlock {
-                powershell -File C:\ArcBox\installArcAgent.ps1 `
-                    -accessToken $using:accessToken `
-                    -tenantId $using:tenantId `
-                    -subscriptionId $using:subscriptionId `
-                    -resourceGroup $using:resourceGroup `
-                    -azureLocation $using:azureLocation
-            } -Credential $winCreds -ErrorAction Stop
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential $winCreds -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
