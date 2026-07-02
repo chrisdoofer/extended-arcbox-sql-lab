@@ -45,10 +45,32 @@ $resourceGroup = $env:resourceGroup
 $resourceTags = $env:resourceTags
 
 # VM Credentials
-$nestedWindowsUsername = 'Administrator'
+# Differencing disk VMs inherit the parent VHD's computer name in their SAM database.
+# PowerShell Direct requires the credential domain to match the guest's internal hostname.
+# The parent SQL VHD's hostname is '$namingPrefix-SQL', so we must use that as the domain.
+# After rename, we'll switch to the new hostname.
 $nestedWindowsPassword = 'JS123!!'
 $secWindowsPassword = ConvertTo-SecureString $nestedWindowsPassword -AsPlainText -Force
-$winCreds = New-Object System.Management.Automation.PSCredential ($nestedWindowsUsername, $secWindowsPassword)
+
+# Pre-rename credentials (parent VHD hostnames)
+$sqlParentHostname = "$namingPrefix-SQL"
+$appParentHostname = "$namingPrefix-Win2K22"
+$winCreds = New-Object System.Management.Automation.PSCredential ("$sqlParentHostname\Administrator", $secWindowsPassword)
+$winCredsApp = New-Object System.Management.Automation.PSCredential ("$appParentHostname\Administrator", $secWindowsPassword)
+
+# Helper: get working credential for a VM (tries renamed hostname, falls back to parent)
+function Get-WorkingCreds {
+    param([string]$VMName, [switch]$IsAppServer)
+    $parentCred = if ($IsAppServer) { $winCredsApp } else { $winCreds }
+    # Try the VM's own name first (works after rename)
+    $localCred = New-Object PSCredential("$VMName\Administrator", $secWindowsPassword)
+    try {
+        Invoke-Command -VMName $VMName -ScriptBlock { $true } -Credential $localCred -ErrorAction Stop | Out-Null
+        return $localCred
+    } catch {
+        return $parentCred
+    }
+}
 
 # SQL Server VM definitions
 $sqlServers = @(
@@ -272,11 +294,25 @@ Write-Host "Note: 'The credential is invalid' during boot is normal - it means t
 Write-Host ""
 
 $readyCount = 0
-$allVMNames = ($sqlServers | Select-Object -First $SqlServerCount | ForEach-Object { $_.Name }) + ($appServers | Select-Object -First $AppServerCount | ForEach-Object { $_.Name })
+$sqlVMNames = $sqlServers | Select-Object -First $SqlServerCount | ForEach-Object { $_.Name }
+$appVMNames = $appServers | Select-Object -First $AppServerCount | ForEach-Object { $_.Name }
 
-foreach ($vmName in $allVMNames) {
+# Wait for SQL VMs with SQL parent credentials
+foreach ($vmName in $sqlVMNames) {
     Write-Host "  Waiting for $vmName..." -NoNewline
     $ready = Wait-ForVMReady -VMName $vmName -Credential $winCreds -TimeoutSeconds 600
+    if ($ready) {
+        $readyCount++
+        Write-Host " READY" -ForegroundColor Green
+    } else {
+        Write-Host " TIMEOUT (will retry later)" -ForegroundColor Yellow
+    }
+}
+
+# Wait for App VMs with App parent credentials
+foreach ($vmName in $appVMNames) {
+    Write-Host "  Waiting for $vmName..." -NoNewline
+    $ready = Wait-ForVMReady -VMName $vmName -Credential $winCredsApp -TimeoutSeconds 600
     if ($ready) {
         $readyCount++
         Write-Host " READY" -ForegroundColor Green
@@ -303,9 +339,14 @@ No VMs became responsive. Possible causes:
 
 # Restart network adapters on all ready VMs
 Write-Host "Restarting network adapters..."
-foreach ($vmName in $allVMNames) {
+foreach ($vmName in $sqlVMNames) {
     try {
         Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $winCreds -ErrorAction SilentlyContinue
+    } catch { }
+}
+foreach ($vmName in $appVMNames) {
+    try {
+        Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $winCredsApp -ErrorAction SilentlyContinue
     } catch { }
 }
 
@@ -409,9 +450,9 @@ if (-not $SkipAppDeployment) {
             Write-Host "Configuring $vmName - $($app.Role) (connects to $sqlTarget)..."
 
             # Rename if needed
-            $hostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $winCreds -ErrorAction Stop
+            $hostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $winCredsApp -ErrorAction Stop
             if ($hostname -ne $vmName) {
-                Invoke-Command -VMName $vmName -ScriptBlock { Rename-Computer -NewName $using:vmName -Restart } -Credential $winCreds
+                Invoke-Command -VMName $vmName -ScriptBlock { Rename-Computer -NewName $using:vmName -Restart } -Credential $winCredsApp
                 Start-Sleep -Seconds 45
             }
 
@@ -419,7 +460,7 @@ if (-not $SkipAppDeployment) {
             Invoke-Command -VMName $vmName -ScriptBlock {
                 Install-WindowsFeature -Name Web-Server, Web-Asp-Net45, Web-Net-Ext45, NET-Framework-45-Features -IncludeManagementTools -ErrorAction SilentlyContinue | Out-Null
                 Write-Host "IIS and .NET installed on $env:COMPUTERNAME"
-            } -Credential $winCreds -ErrorAction Stop
+            } -Credential $winCredsApp -ErrorAction Stop
 
             # Deploy connection test app
             $appConfig = @"
@@ -628,7 +669,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
             # Use the same comma-separated parameter pattern as the base ArcBox script
-            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential $winCreds -ErrorAction Stop
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCreds -VMName $vmName) -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
@@ -647,7 +688,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
         try {
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
-            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential $winCreds -ErrorAction Stop
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCreds -VMName $vmName -IsAppServer) -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
