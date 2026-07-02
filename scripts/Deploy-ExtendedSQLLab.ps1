@@ -443,21 +443,94 @@ try {
 if (-not $SkipArcOnboarding) {
     Write-Header "Onboarding VMs to Azure Arc"
 
-    # Login to Azure
-    az login --identity 2>&1 | Out-Null
-    az account set -s $subscriptionId
+    # --- Pre-flight: Verify Azure authentication ---
+    # This script MUST run on the ArcBox Client VM which has a managed identity.
+    # If running manually, ensure you've authenticated first:
+    #   az login --identity   (on Client VM with managed identity)
+    #   az login              (interactive, if no managed identity)
+    #   Connect-AzAccount     (for Az PowerShell)
 
-    Connect-AzAccount -Identity -Tenant $tenantId -Subscription $subscriptionId
+    Write-Host "Authenticating to Azure..."
 
-    $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
+    # Try managed identity first, fall back to checking existing context
+    $azContext = $null
+    try {
+        $loginResult = az login --identity 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Managed identity login failed. Checking for existing Azure CLI session..."
+            $accountShow = az account show 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error @"
+Azure authentication failed. This script requires Azure credentials.
+If running on the ArcBox Client VM: ensure the VM has a system-assigned managed identity with Contributor role.
+If running interactively: run 'az login' and 'Connect-AzAccount' before executing this script.
+"@
+                Stop-Transcript
+                exit 1
+            }
+        }
+        az account set -s $subscriptionId
+        Write-Host "  Azure CLI authenticated successfully."
+    } catch {
+        Write-Error "Azure CLI authentication failed: $_"
+        Stop-Transcript
+        exit 1
+    }
+
+    try {
+        $azContext = Get-AzContext
+        if (-not $azContext) {
+            Connect-AzAccount -Identity -Tenant $tenantId -Subscription $subscriptionId -ErrorAction Stop
+        } else {
+            Set-AzContext -Subscription $subscriptionId -ErrorAction Stop | Out-Null
+        }
+        Write-Host "  Az PowerShell authenticated successfully."
+    } catch {
+        Write-Warning "Az PowerShell auth via managed identity failed. Trying existing context..."
+        try {
+            Connect-AzAccount -Tenant $tenantId -Subscription $subscriptionId -ErrorAction Stop
+        } catch {
+            Write-Error "Az PowerShell authentication failed. Run 'Connect-AzAccount' manually first."
+            Stop-Transcript
+            exit 1
+        }
+    }
+
+    # Helper function to get a fresh access token (tokens expire after ~60 min)
+    function Get-FreshAccessToken {
+        $token = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
+        if (-not $token) {
+            throw "Failed to acquire access token. Ensure Azure authentication is valid."
+        }
+        return $token
+    }
+
+    # Get initial token and verify it works
+    try {
+        $accessToken = Get-FreshAccessToken
+        Write-Host "  Access token acquired successfully."
+    } catch {
+        Write-Error "Failed to get access token: $_. Run 'Connect-AzAccount' first."
+        Stop-Transcript
+        exit 1
+    }
 
     # Opt out of automatic SQL extension deployment (we'll do it manually)
     az tag create --resource-id "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup" --tags ArcSQLServerExtensionDeployment=Disabled 2>&1 | Out-Null
 
-    # Onboard all SQL VMs
+    # Onboard all SQL VMs (refresh token every 5 VMs to avoid expiry)
+    $vmCounter = 0
     foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
         $vmName = $sql.Name
-        Write-Host "Onboarding $vmName to Azure Arc..."
+        $vmCounter++
+
+        # Refresh token every 5 VMs to avoid expiry during long onboarding
+        if ($vmCounter % 5 -eq 1) {
+            Write-Host "  Refreshing access token..."
+            $accessToken = Get-FreshAccessToken
+        }
+
+        Write-Host "Onboarding $vmName to Azure Arc... ($vmCounter of $SqlServerCount)"
 
         try {
             # Copy and run Arc agent install script
@@ -478,7 +551,10 @@ if (-not $SkipArcOnboarding) {
         }
     }
 
-    # Onboard App Servers
+    # Onboard App Servers (refresh token before starting app servers)
+    Write-Host "  Refreshing access token for App Server onboarding..."
+    $accessToken = Get-FreshAccessToken
+
     foreach ($app in $appServers | Select-Object -First $AppServerCount) {
         $vmName = $app.Name
         Write-Host "Onboarding $vmName to Azure Arc..."
