@@ -480,6 +480,91 @@ foreach ($vmName in $readyVMs) {
 Start-Sleep -Seconds 30
 #endregion
 
+#region Join VMs to domain
+Write-Header "Joining VMs to jumpstart.local domain"
+
+# Domain details (matches base ArcBox AD DS configuration)
+$addsDomainName = $env:addsDomainName
+if (-not $addsDomainName) { $addsDomainName = 'jumpstart.local' }
+$domainNetbios = $addsDomainName.Split('.')[0]
+$domainCred = New-Object PSCredential("$domainNetbios\Administrator", $secWindowsPassword)
+
+# Check DC is reachable before attempting joins
+$dcReachable = $false
+$dcName = "$namingPrefix-DC"
+$dcVM = Get-VM -Name $dcName -ErrorAction SilentlyContinue
+if ($dcVM -and $dcVM.State -eq 'Running') {
+    Write-Host "Domain controller $dcName is running."
+    $dcReachable = $true
+} else {
+    # Try to resolve the domain from one of the VMs
+    $testVM = $readyVMs | Select-Object -First 1
+    if ($testVM) {
+        $testCred = Get-WorkingCredential -VMName $testVM
+        try {
+            $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
+                Resolve-DnsName $using:addsDomainName -ErrorAction SilentlyContinue
+            } -Credential $testCred -ErrorAction Stop
+            if ($dnsTest) {
+                Write-Host "Domain $addsDomainName is resolvable from VMs."
+                $dcReachable = $true
+            }
+        } catch { }
+    }
+}
+
+if ($dcReachable) {
+    $joinedVMs = @()
+    foreach ($vmName in $readyVMs) {
+        $localCred = Get-WorkingCredential -VMName $vmName
+        try {
+            # Check if already domain-joined
+            $domainStatus = Invoke-Command -VMName $vmName -ScriptBlock {
+                (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+            } -Credential $localCred -ErrorAction Stop
+
+            if ($domainStatus) {
+                Write-Host "  $vmName is already domain-joined." -ForegroundColor Green
+                continue
+            }
+
+            Write-Host "  Joining $vmName to $addsDomainName..."
+            Invoke-Command -VMName $vmName -ScriptBlock {
+                Add-Computer -DomainName $using:addsDomainName -Credential $using:domainCred -Force -Restart
+            } -Credential $localCred -ErrorAction Stop
+            $joinedVMs += $vmName
+        } catch {
+            $errMsg = $_.Exception.Message
+            Write-Warning "  Failed to join ${vmName}: $errMsg"
+        }
+    }
+
+    if ($joinedVMs.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Waiting for $($joinedVMs.Count) VMs to reboot after domain join (90 seconds)..."
+        Start-Sleep -Seconds 90
+
+        # Verify VMs are back online (now use domain cred or local cred)
+        Write-Host "Verifying VMs are back online after domain join..."
+        foreach ($vmName in $joinedVMs) {
+            $cred = Get-WorkingCredential -VMName $vmName
+            $ready = Wait-ForVMReady -VMName $vmName -Credential $cred -TimeoutSeconds 120
+            if ($ready) {
+                Write-Host "  $vmName rejoined domain and online." -ForegroundColor Green
+            } else {
+                Write-Warning "  $vmName did not come back after domain join."
+            }
+        }
+    }
+
+    Write-Host "Domain join complete."
+} else {
+    Write-Warning "Domain controller not reachable. Skipping domain join."
+    Write-Warning "VMs will operate as workgroup members. To join later, run:"
+    Write-Warning "  Add-Computer -DomainName '$addsDomainName' -Credential (Get-Credential) -Restart"
+}
+#endregion
+
 #region Configure SQL Server Instances
 Write-Header "Configuring SQL Server Instances and Databases"
 
