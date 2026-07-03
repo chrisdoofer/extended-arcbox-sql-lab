@@ -484,32 +484,51 @@ Start-Sleep -Seconds 30
 Write-Header "Joining VMs to jumpstart.local domain"
 
 # Domain details (matches base ArcBox AD DS configuration)
+# In ArcBox ITPro, the Client VM itself IS the domain controller.
+# The DC is reachable from nested VMs via the NAT gateway IP (10.10.1.1).
 $addsDomainName = $env:addsDomainName
 if (-not $addsDomainName) { $addsDomainName = 'jumpstart.local' }
 $domainNetbios = $addsDomainName.Split('.')[0]
 $domainCred = New-Object PSCredential("$domainNetbios\Administrator", $secWindowsPassword)
 
-# Check DC is reachable before attempting joins
-$dcReachable = $false
-$dcName = "$namingPrefix-DC"
-$dcVM = Get-VM -Name $dcName -ErrorAction SilentlyContinue
-if ($dcVM -and $dcVM.State -eq 'Running') {
-    Write-Host "Domain controller $dcName is running."
-    $dcReachable = $true
-} else {
-    # Try to resolve the domain from one of the VMs
-    $testVM = $readyVMs | Select-Object -First 1
-    if ($testVM) {
-        $testCred = Get-WorkingCredential -VMName $testVM
-        try {
-            $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
-                Resolve-DnsName $using:addsDomainName -ErrorAction SilentlyContinue
-            } -Credential $testCred -ErrorAction Stop
-            if ($dnsTest) {
-                Write-Host "Domain $addsDomainName is resolvable from VMs."
-                $dcReachable = $true
+# The Client VM (this host) is the DC. Its internal NAT IP is the DNS server for nested VMs.
+$natGatewayIP = '10.10.1.1'
+
+# First, configure DNS on all VMs to point to the DC (Client VM's NAT IP)
+Write-Host "Configuring DNS on VMs to point to domain controller ($natGatewayIP)..."
+foreach ($vmName in $readyVMs) {
+    $cred = Get-WorkingCredential -VMName $vmName
+    try {
+        Invoke-Command -VMName $vmName -ScriptBlock {
+            $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+            if ($adapter) {
+                Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $using:natGatewayIP
             }
-        } catch { }
+        } -Credential $cred -ErrorAction Stop
+    } catch {
+        $errMsg = $_.Exception.Message
+        Write-Warning "  Could not set DNS on ${vmName}: $errMsg"
+    }
+}
+
+Start-Sleep -Seconds 5
+
+# Verify DC is reachable from a VM
+$dcReachable = $false
+$testVM = $readyVMs | Select-Object -First 1
+if ($testVM) {
+    $testCred = Get-WorkingCredential -VMName $testVM
+    try {
+        $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
+            Resolve-DnsName $using:addsDomainName -ErrorAction Stop
+        } -Credential $testCred -ErrorAction Stop
+        if ($dnsTest) {
+            Write-Host "Domain $addsDomainName is resolvable from VMs." -ForegroundColor Green
+            $dcReachable = $true
+        }
+    } catch {
+        $errMsg = $_.Exception.Message
+        Write-Warning "DNS resolution failed from ${testVM}: $errMsg"
     }
 }
 
@@ -559,7 +578,8 @@ if ($dcReachable) {
 
     Write-Host "Domain join complete."
 } else {
-    Write-Warning "Domain controller not reachable. Skipping domain join."
+    Write-Warning "Domain controller not reachable from VMs. Skipping domain join."
+    Write-Warning "Ensure the Client VM has AD DS installed and DNS is configured."
     Write-Warning "VMs will operate as workgroup members. To join later, run:"
     Write-Warning "  Add-Computer -DomainName '$addsDomainName' -Credential (Get-Credential) -Restart"
 }
