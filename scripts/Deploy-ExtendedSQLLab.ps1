@@ -993,4 +993,4 @@ Write-Host "Total VMs: $($SqlServerCount + $AppServerCount)"
 Write-Host "Deployment completed at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 #endregion
 
-Stop-Transcript
+Stop-Transcript -ErrorAction SilentlyContinue
