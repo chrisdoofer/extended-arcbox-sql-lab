@@ -433,7 +433,13 @@ foreach ($vmName in $readyVMs) {
         $currentHostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $cred -ErrorAction Stop
         if ($currentHostname -ne $vmName) {
             Write-Host "  Renaming $vmName (currently: $currentHostname)..."
-            Invoke-Command -VMName $vmName -ScriptBlock { 
+            Invoke-Command -VMName $vmName -ScriptBlock {
+                # If domain-joined, force unjoin first (DC not reachable on isolated network)
+                $cs = Get-WmiObject Win32_ComputerSystem
+                if ($cs.PartOfDomain) {
+                    # Flag 0 = don't try to disable machine account on DC
+                    $cs.UnjoinDomainOrWorkgroup($null, $null, 0) | Out-Null
+                }
                 Rename-Computer -NewName $using:vmName -Force -Restart
             } -Credential $cred -ErrorAction Stop
             $renameNeeded += $vmName
