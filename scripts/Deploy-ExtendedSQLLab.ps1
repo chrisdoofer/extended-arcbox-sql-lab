@@ -81,11 +81,11 @@ $sqlServers = @(
     @{ Name = "$namingPrefix-SQL03"; Role = "HR/Payroll"; DB = "HRPayroll"; Port = 1433; IP = "10.10.1.103" }
     @{ Name = "$namingPrefix-SQL04"; Role = "Inventory/WMS"; DB = "InventoryWMS"; Port = 1433; IP = "10.10.1.104" }
     @{ Name = "$namingPrefix-SQL05"; Role = "E-Commerce"; DB = "ECommerceStore"; Port = 1433; IP = "10.10.1.105" }
-    @{ Name = "$namingPrefix-SQL06"; Role = "Analytics"; DB = "AnalyticsDB"; Port = 1433; IP = "10.10.1.106" }
-    @{ Name = "$namingPrefix-SQL07"; Role = "Document Mgmt"; DB = "DocumentMgmt"; Port = 1433; IP = "10.10.1.107" }
-    @{ Name = "$namingPrefix-SQL08"; Role = "Legacy LOB"; DB = "LegacyLOB"; Port = 1433; IP = "10.10.1.108" }
-    @{ Name = "$namingPrefix-SQL09"; Role = "DevTest"; DB = "AppDev_v2"; Port = 1433; IP = "10.10.1.109" }
-    @{ Name = "$namingPrefix-SQL10"; Role = "Compliance"; DB = "ComplianceAudit"; Port = 1433; IP = "10.10.1.110" }
+    @{ Name = "$namingPrefix-SQL06"; Role = "Analytics"; DB = "AnalyticsDB"; Port = 1433; IP = "10.10.1.116" }
+    @{ Name = "$namingPrefix-SQL07"; Role = "Document Mgmt"; DB = "DocumentMgmt"; Port = 1433; IP = "10.10.1.117" }
+    @{ Name = "$namingPrefix-SQL08"; Role = "Legacy LOB"; DB = "LegacyLOB"; Port = 1433; IP = "10.10.1.118" }
+    @{ Name = "$namingPrefix-SQL09"; Role = "DevTest"; DB = "AppDev_v2"; Port = 1433; IP = "10.10.1.119" }
+    @{ Name = "$namingPrefix-SQL10"; Role = "Compliance"; DB = "ComplianceAudit"; Port = 1433; IP = "10.10.1.120" }
 )
 
 # App Server VM definitions
