@@ -487,7 +487,7 @@ Write-Header "Joining VMs to jumpstart.local domain"
 # In ArcBox ITPro, the Client VM itself IS the domain controller.
 # The DC is reachable from nested VMs via the NAT gateway IP (10.10.1.1).
 $addsDomainName = $env:addsDomainName
-if (-not $addsDomainName) { $addsDomainName = 'jumpstart.local' }
+if (-not $addsDomainName) { $addsDomainName = 'doofer.co.uk' }
 $domainNetbios = $addsDomainName.Split('.')[0]
 $domainCred = New-Object PSCredential("$domainNetbios\Administrator", $secWindowsPassword)
 
