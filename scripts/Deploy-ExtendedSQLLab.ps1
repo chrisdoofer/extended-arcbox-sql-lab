@@ -45,15 +45,33 @@ $resourceGroup = $env:resourceGroup
 $resourceTags = $env:resourceTags
 
 # VM Credentials
-# We inject unique hostnames into each differencing disk BEFORE boot via offline registry edit.
-# This means each VM boots with its own hostname and credentials use '<VMName>\Administrator'.
+# All differencing disk VMs inherit the parent VHD's computer name ("ArcBox-SQL") in their SAM.
+# PowerShell Direct uses -VMName (Hyper-V name) to target the specific VM, but the
+# credential domain must match the GUEST's internal hostname from the SAM database.
+# So we use "ArcBox-SQL\Administrator" for initial access, then rename.
 $nestedWindowsPassword = 'JS123!!'
 $secWindowsPassword = ConvertTo-SecureString $nestedWindowsPassword -AsPlainText -Force
 
-# Helper: build credential for a given VM name
+# Initial credential uses parent VHD hostname (same for all VMs before rename)
+$sqlParentHostname = "$namingPrefix-SQL"
+$initialCred = New-Object System.Management.Automation.PSCredential ("$sqlParentHostname\Administrator", $secWindowsPassword)
+
+# After rename, credential uses the VM's new hostname
 function Get-VMCredential {
     param([string]$VMName)
     return New-Object System.Management.Automation.PSCredential ("$VMName\Administrator", $secWindowsPassword)
+}
+
+# Try both credentials (post-rename first, fall back to initial)
+function Get-WorkingCredential {
+    param([string]$VMName)
+    $renamedCred = Get-VMCredential -VMName $VMName
+    try {
+        Invoke-Command -VMName $VMName -ScriptBlock { $true } -Credential $renamedCred -ErrorAction Stop | Out-Null
+        return $renamedCred
+    } catch {
+        return $initialCred
+    }
 }
 
 # SQL Server VM definitions
@@ -101,82 +119,6 @@ function Wait-ForVM {
     Start-Sleep -Seconds 30
 }
 
-# Inject a unique hostname into a differencing disk via offline registry edit.
-# This modifies the SYSTEM hive's ComputerName keys so the VM boots with the desired name.
-function Set-VHDHostname {
-    param (
-        [string]$VhdPath,
-        [string]$DesiredHostname
-    )
-    Write-Host "  Injecting hostname '$DesiredHostname' into $([System.IO.Path]::GetFileName($VhdPath))..."
-    try {
-        # Mount the VHD
-        $disk = Mount-VHD -Path $VhdPath -Passthru
-        $partition = $disk | Get-Disk | Get-Partition | Where-Object { $_.Type -eq 'Basic' -and $_.Size -gt 1GB }
-        if (-not $partition) {
-            $partition = $disk | Get-Disk | Get-Partition | Where-Object { $_.DriveLetter }
-        }
-        $driveLetter = $partition.DriveLetter
-        if (-not $driveLetter) {
-            # Assign a drive letter if none exists
-            $partition | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction SilentlyContinue
-            $partition = $disk | Get-Disk | Get-Partition | Where-Object { $_.DriveLetter }
-            $driveLetter = $partition.DriveLetter
-        }
-
-        if (-not $driveLetter) {
-            Write-Warning "    Could not get drive letter for $VhdPath"
-            Dismount-VHD -Path $VhdPath
-            return $false
-        }
-
-        $systemHivePath = "${driveLetter}:\Windows\System32\config\SYSTEM"
-        if (-not (Test-Path $systemHivePath)) {
-            Write-Warning "    SYSTEM hive not found at $systemHivePath"
-            Dismount-VHD -Path $VhdPath
-            return $false
-        }
-
-        # Load the SYSTEM hive into a temporary registry mount point
-        $regKey = "YOURKEY_$(Get-Random)"
-        $null = reg load "HKLM\$regKey" $systemHivePath 2>&1
-
-        # Find the ControlSet (usually ControlSet001)
-        $controlSets = Get-ChildItem "HKLM:\$regKey" | Where-Object { $_.Name -match 'ControlSet' }
-        foreach ($cs in $controlSets) {
-            $csName = $cs.PSChildName
-            $compNamePath = "HKLM:\$regKey\$csName\Control\ComputerName\ComputerName"
-            if (Test-Path $compNamePath) {
-                Set-ItemProperty -Path $compNamePath -Name "ComputerName" -Value $DesiredHostname
-            }
-            # Also set the ActiveComputerName (optional, some versions use it)
-            $activeNamePath = "HKLM:\$regKey\$csName\Control\ComputerName\ActiveComputerName"
-            if (Test-Path $activeNamePath) {
-                Set-ItemProperty -Path $activeNamePath -Name "ComputerName" -Value $DesiredHostname
-            }
-            # Set TCP/IP hostname
-            $tcpipParamsPath = "HKLM:\$regKey\$csName\Services\Tcpip\Parameters"
-            if (Test-Path $tcpipParamsPath) {
-                Set-ItemProperty -Path $tcpipParamsPath -Name "Hostname" -Value $DesiredHostname
-                Set-ItemProperty -Path $tcpipParamsPath -Name "NV Hostname" -Value $DesiredHostname
-            }
-        }
-
-        # Unload the hive
-        [gc]::Collect()
-        Start-Sleep -Seconds 1
-        $null = reg unload "HKLM\$regKey" 2>&1
-
-        # Dismount the VHD
-        Dismount-VHD -Path $VhdPath
-        Write-Host "    Hostname set to '$DesiredHostname'" -ForegroundColor Green
-        return $true
-    } catch {
-        Write-Warning "    Failed to inject hostname: $_"
-        try { Dismount-VHD -Path $VhdPath -ErrorAction SilentlyContinue } catch {}
-        return $false
-    }
-}
 #endregion
 
 # Start logging
@@ -193,22 +135,65 @@ if (-not (Test-Path $ExtendedLabDir)) {
 }
 #endregion
 
-#region Stop original ArcBox-SQL VM to release parent VHD lock
+#region Convert original ArcBox-SQL to use differencing disk
 Write-Header "Preparing Parent VHD"
 
-# The parent SQL VHD is used directly by the original ArcBox-SQL VM.
-# Differencing disks lock the parent VHD in read-only mode, which conflicts
-# with the original VM's read-write lock. We must stop it first.
+# PROBLEM: The original ArcBox-SQL VM uses the parent VHD directly (read-write).
+# Differencing disks require the parent to be read-only. These are INCOMPATIBLE.
+# Even when VMs are stopped, Hyper-V won't allow read-write access to a VHD that
+# has differencing children pointing to it.
+#
+# SOLUTION: Convert the original ArcBox-SQL to also use a differencing disk.
+# This way ALL VMs (original + new ones) reference the parent as read-only.
+
 $originalSqlVM = Get-VM -Name "$namingPrefix-SQL" -ErrorAction SilentlyContinue
-if ($originalSqlVM -and $originalSqlVM.State -eq 'Running') {
-    Write-Host "Stopping original $namingPrefix-SQL VM to release parent VHD lock..."
-    Stop-VM -Name "$namingPrefix-SQL" -Force -TurnOff
-    Start-Sleep -Seconds 5
-    Write-Host "  Original VM stopped. It will be replaced by the 10 extended SQL VMs."
-} elseif ($originalSqlVM) {
-    Write-Host "Original $namingPrefix-SQL VM is already stopped (State: $($originalSqlVM.State))."
+if ($originalSqlVM) {
+    $originalVhd = (Get-VMHardDiskDrive -VMName "$namingPrefix-SQL" | Select-Object -First 1).Path
+    
+    # Check if it's already using a differencing disk
+    $vhdInfo = Get-VHD -Path $originalVhd -ErrorAction SilentlyContinue
+    if ($vhdInfo -and $vhdInfo.VhdType -ne 'Differencing') {
+        Write-Host "Converting original $namingPrefix-SQL to use a differencing disk..."
+        
+        # Stop the VM if running
+        if ($originalSqlVM.State -eq 'Running') {
+            Stop-VM -Name "$namingPrefix-SQL" -Force -TurnOff
+            Start-Sleep -Seconds 5
+        }
+        
+        # The original VHD becomes our parent. Create a differencing disk for the original VM.
+        $originalDiffPath = "$Env:ArcBoxVMDir\$namingPrefix-SQL-diff.vhdx"
+        if (-not (Test-Path $originalDiffPath)) {
+            New-VHD -Path $originalDiffPath -ParentPath $originalVhd -Differencing | Out-Null
+        }
+        
+        # Swap the original VM's disk to the differencing disk
+        $diskDrive = Get-VMHardDiskDrive -VMName "$namingPrefix-SQL" | Select-Object -First 1
+        Set-VMHardDiskDrive -VMName "$namingPrefix-SQL" -ControllerType $diskDrive.ControllerType -ControllerNumber $diskDrive.ControllerNumber -ControllerLocation $diskDrive.ControllerLocation -Path $originalDiffPath
+        
+        Write-Host "  Original VM now uses differencing disk: $originalDiffPath"
+        Write-Host "  Parent VHD is now read-only (shared by all differencing disks)"
+        
+        # Start the original VM back up
+        Start-VM -Name "$namingPrefix-SQL"
+        Write-Host "  Original $namingPrefix-SQL VM restarted successfully."
+    } else {
+        Write-Host "Original $namingPrefix-SQL already uses a differencing disk (or is already converted)."
+        # Ensure it's running
+        if ($originalSqlVM.State -ne 'Running') {
+            Start-VM -Name "$namingPrefix-SQL" -ErrorAction SilentlyContinue
+        }
+    }
+    
+    # Use the actual parent VHD path for our new differencing disks
+    if ($vhdInfo -and $vhdInfo.VhdType -eq 'Differencing') {
+        $parentSqlVhdPath = $vhdInfo.ParentPath
+    } else {
+        $parentSqlVhdPath = $originalVhd
+    }
 } else {
-    Write-Host "No original $namingPrefix-SQL VM found (this is fine for fresh deployments)."
+    Write-Host "No original $namingPrefix-SQL VM found (fresh deployment)."
+    $parentSqlVhdPath = $null
 }
 #endregion
 
@@ -224,24 +209,25 @@ if ($dhcpScope.EndRange -ne '10.10.1.250') {
 #region Create Differencing Disks for SQL Servers
 Write-Header "Creating Differencing Disks for SQL Server VMs"
 
-# Identify parent SQL VHD
-$parentSqlVhd = Get-ChildItem "$Env:ArcBoxVMDir" -Filter "*SQL*.vhdx" | Where-Object { $_.Name -match "$namingPrefix-SQL\.vhdx" } | Select-Object -First 1
-
-if (-not $parentSqlVhd) {
-    Write-Error "Parent SQL VHD not found. Ensure the base ArcBox deployment has completed."
-    Stop-Transcript
-    exit 1
+# Use the parent path we determined above, or find it
+if (-not $parentSqlVhdPath) {
+    $parentSqlVhd = Get-ChildItem "$Env:ArcBoxVMDir" -Filter "*SQL*.vhdx" | Where-Object { $_.Name -match "$namingPrefix-SQL\.vhdx" } | Select-Object -First 1
+    if (-not $parentSqlVhd) {
+        Write-Error "Parent SQL VHD not found. Ensure the base ArcBox deployment has completed."
+        Stop-Transcript
+        exit 1
+    }
+    $parentSqlVhdPath = $parentSqlVhd.FullName
 }
 
-Write-Host "Parent SQL VHD: $($parentSqlVhd.FullName)"
+Write-Host "Parent SQL VHD: $parentSqlVhdPath"
 
 foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
     $diffDiskPath = "$Env:ArcBoxVMDir\$($sql.Name).vhdx"
     if (-not (Test-Path $diffDiskPath)) {
         Write-Host "Creating differencing disk for $($sql.Name)..."
-        New-VHD -Path $diffDiskPath -ParentPath $parentSqlVhd.FullName -Differencing | Out-Null
-        # Inject unique hostname into the disk BEFORE boot
-        Set-VHDHostname -VhdPath $diffDiskPath -DesiredHostname $sql.Name
+        New-VHD -Path $diffDiskPath -ParentPath $parentSqlVhdPath -Differencing | Out-Null
+        Write-Host "  Created: $diffDiskPath"
     } else {
         Write-Host "  Disk already exists: $diffDiskPath"
     }
@@ -254,20 +240,20 @@ Write-Header "Creating Differencing Disks for Application Server VMs"
 $parentWinVhd = Get-ChildItem "$Env:ArcBoxVMDir" -Filter "*Win2K22*.vhdx" | Select-Object -First 1
 
 if (-not $parentWinVhd) {
-    # Fall back to using SQL VHD as parent (Windows Server with IIS can be added)
     Write-Warning "Win2K22 parent VHD not found. Using SQL VHD as parent for app servers."
-    $parentWinVhd = $parentSqlVhd
+    $parentWinVhdPath = $parentSqlVhdPath
+} else {
+    $parentWinVhdPath = $parentWinVhd.FullName
 }
 
-Write-Host "Parent App Server VHD: $($parentWinVhd.FullName)"
+Write-Host "Parent App Server VHD: $parentWinVhdPath"
 
 foreach ($app in $appServers | Select-Object -First $AppServerCount) {
     $diffDiskPath = "$Env:ArcBoxVMDir\$($app.Name).vhdx"
     if (-not (Test-Path $diffDiskPath)) {
         Write-Host "Creating differencing disk for $($app.Name)..."
-        New-VHD -Path $diffDiskPath -ParentPath $parentWinVhd.FullName -Differencing | Out-Null
-        # Inject unique hostname into the disk BEFORE boot
-        Set-VHDHostname -VhdPath $diffDiskPath -DesiredHostname $app.Name
+        New-VHD -Path $diffDiskPath -ParentPath $parentWinVhdPath -Differencing | Out-Null
+        Write-Host "  Created: $diffDiskPath"
     } else {
         Write-Host "  Disk already exists: $diffDiskPath"
     }
@@ -348,8 +334,10 @@ if (Test-Path $appDscFile) {
 #region Wait for VMs to boot
 Write-Header "Waiting for VMs to fully boot"
 
-# Since we injected unique hostnames offline, each VM boots with its own name.
-# PowerShell Direct credentials use '<VMName>\Administrator'.
+# All VMs boot with the parent's hostname (ArcBox-SQL). We connect using the parent
+# hostname as the credential domain, then rename each VM to its unique name.
+# PowerShell Direct's -VMName targets by Hyper-V name, so it works even when
+# all guests have the same internal hostname.
 
 function Wait-ForVMReady {
     param (
@@ -364,23 +352,23 @@ function Wait-ForVMReady {
         try {
             $result = Invoke-Command -VMName $VMName -ScriptBlock { hostname } -Credential $Credential -ErrorAction Stop
             if ($result) {
-                Write-Host "  $VMName READY (hostname: $result, attempt $attempt)" -ForegroundColor Green
+                Write-Host "    READY (internal hostname: $result, attempt $attempt)" -ForegroundColor Green
                 return $true
             }
         } catch {
-            if ($attempt -le 3 -or $attempt % 6 -eq 0) {
+            if ($attempt -le 3 -or $attempt % 10 -eq 0) {
                 $errMsg = $_.Exception.Message
                 Write-Host "    Attempt ${attempt}: $errMsg" -ForegroundColor DarkYellow
             }
         }
         Start-Sleep -Seconds 10
     }
-    Write-Host "  $VMName TIMEOUT after $attempt attempts" -ForegroundColor Red
+    Write-Host "    TIMEOUT after $attempt attempts" -ForegroundColor Red
     return $false
 }
 
 Write-Host "Waiting for VMs to become responsive (this may take 3-5 minutes with 15 VMs)..."
-Write-Host "Each VM has a unique hostname injected before boot — no rename step needed."
+Write-Host "Using credential: $($initialCred.UserName) (parent VHD hostname)"
 Write-Host ""
 
 $readyVMs = @()
@@ -389,18 +377,29 @@ $failedVMs = @()
 # Wait for SQL VMs
 foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
     $vmName = $sql.Name
-    $cred = Get-VMCredential -VMName $vmName
-    Write-Host "  Waiting for $vmName (credential: $($cred.UserName))..."
-    $ready = Wait-ForVMReady -VMName $vmName -Credential $cred -TimeoutSeconds 600
+    Write-Host "  Waiting for ${vmName}..."
+    $ready = Wait-ForVMReady -VMName $vmName -Credential $initialCred -TimeoutSeconds 600
     if ($ready) { $readyVMs += $vmName } else { $failedVMs += $vmName }
 }
 
-# Wait for App VMs
+# Wait for App VMs (may use different parent hostname if Win2K22 VHD)
+$appInitialCred = $initialCred
+if ($parentWinVhdPath -ne $parentSqlVhdPath) {
+    # App servers come from Win2K22 parent - try to determine its hostname
+    # Default assumption: the Win2K22 VHD's hostname is 'ArcBox-Win2K22'
+    $appInitialCred = New-Object PSCredential("$namingPrefix-Win2K22\Administrator", $secWindowsPassword)
+}
+
 foreach ($app in $appServers | Select-Object -First $AppServerCount) {
     $vmName = $app.Name
-    $cred = Get-VMCredential -VMName $vmName
-    Write-Host "  Waiting for $vmName (credential: $($cred.UserName))..."
-    $ready = Wait-ForVMReady -VMName $vmName -Credential $cred -TimeoutSeconds 600
+    Write-Host "  Waiting for ${vmName}..."
+    # Try SQL parent cred first (in case Win2K22 VHD wasn't found and SQL was used)
+    $ready = Wait-ForVMReady -VMName $vmName -Credential $appInitialCred -TimeoutSeconds 300
+    if (-not $ready -and $appInitialCred.UserName -ne $initialCred.UserName) {
+        Write-Host "    Retrying with SQL parent credential..."
+        $ready = Wait-ForVMReady -VMName $vmName -Credential $initialCred -TimeoutSeconds 300
+        if ($ready) { $appInitialCred = $initialCred }  # SQL VHD was used as fallback
+    }
     if ($ready) { $readyVMs += $vmName } else { $failedVMs += $vmName }
 }
 
@@ -411,25 +410,62 @@ if ($failedVMs.Count -gt 0) {
 }
 
 if ($readyVMs.Count -eq 0) {
-    Write-Error @"
-No VMs became responsive. Possible causes:
-1. The hostname injection may not have worked (differencing disk was already created previously).
-   Try deleting the differencing disks and re-running to re-inject hostnames.
-2. VMs may have failed to boot. Check Hyper-V Manager for VM states.
-3. Integration Services may not be enabled. Check VM settings.
-
-To manually fix existing VMs, try credential with parent hostname:
-  `$cred = New-Object PSCredential('ArcBox-SQL\Administrator', (ConvertTo-SecureString 'JS123!!' -AsPlainText -Force))
-  Invoke-Command -VMName 'ArcBox-SQL01' -ScriptBlock { hostname } -Credential `$cred
-"@
+    Write-Error "No VMs became responsive. Check Hyper-V Manager for VM states and verify credential manually."
     Stop-Transcript
     exit 1
 }
+#endregion
+
+#region Rename VMs to unique hostnames
+Write-Header "Renaming VMs to unique hostnames"
+
+# Each VM currently has hostname 'ArcBox-SQL' (from parent). Rename to match Hyper-V name.
+$renameNeeded = @()
+
+foreach ($vmName in $readyVMs) {
+    try {
+        # Determine which credential works for this VM
+        $cred = $initialCred
+        if ($vmName -match 'APP' -and $appInitialCred.UserName -ne $initialCred.UserName) {
+            $cred = $appInitialCred
+        }
+        
+        $currentHostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $cred -ErrorAction Stop
+        if ($currentHostname -ne $vmName) {
+            Write-Host "  Renaming $vmName (currently: $currentHostname)..."
+            Invoke-Command -VMName $vmName -ScriptBlock { 
+                Rename-Computer -NewName $using:vmName -Force -Restart
+            } -Credential $cred -ErrorAction Stop
+            $renameNeeded += $vmName
+        } else {
+            Write-Host "  $vmName already has correct hostname." -ForegroundColor Green
+        }
+    } catch {
+        $errMsg = $_.Exception.Message
+        Write-Warning "  Could not rename ${vmName}: $errMsg"
+    }
+}
+
+if ($renameNeeded.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Waiting for $($renameNeeded.Count) VMs to reboot after rename (90 seconds)..."
+    Start-Sleep -Seconds 90
+    
+    # Verify VMs are back with new hostnames
+    Write-Host "Verifying VMs are back online with new hostnames..."
+    foreach ($vmName in $renameNeeded) {
+        $cred = Get-VMCredential -VMName $vmName
+        $ready = Wait-ForVMReady -VMName $vmName -Credential $cred -TimeoutSeconds 120
+        if (-not $ready) {
+            Write-Warning "  $vmName did not come back after rename. May need manual intervention."
+        }
+    }
+}
 
 # Restart network adapters on all ready VMs to ensure DHCP works
-Write-Host "Restarting network adapters on ready VMs..."
+Write-Host "Restarting network adapters..."
 foreach ($vmName in $readyVMs) {
-    $cred = Get-VMCredential -VMName $vmName
+    $cred = Get-WorkingCredential -VMName $vmName
     try {
         Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $cred -ErrorAction SilentlyContinue
     } catch { }
@@ -449,7 +485,7 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
     try {
         Write-Host "Configuring $vmName - $($sql.Role)..."
 
-        $cred = Get-VMCredential -VMName $vmName
+        $cred = Get-WorkingCredential -VMName $vmName
 
         # Create data directory
         Invoke-Command -VMName $vmName -ScriptBlock {
@@ -508,15 +544,15 @@ if (-not $SkipAppDeployment) {
         try {
             Write-Host "Configuring $vmName - $($app.Role) (connects to $sqlTarget)..."
 
-            $cred = Get-VMCredential -VMName $vmName
+            $cred = Get-WorkingCredential -VMName $vmName
 
-            # Verify hostname (should already be correct from offline injection)
+            # Verify hostname (should already be correct from rename step)
             $hostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $cred -ErrorAction Stop
             if ($hostname -ne $vmName) {
                 Write-Host "    Note: hostname is '$hostname', expected '$vmName'. Renaming..."
-                Invoke-Command -VMName $vmName -ScriptBlock { Rename-Computer -NewName $using:vmName -Restart } -Credential $cred
+                Invoke-Command -VMName $vmName -ScriptBlock { Rename-Computer -NewName $using:vmName -Force -Restart } -Credential $cred
                 Start-Sleep -Seconds 45
-                $cred = Get-VMCredential -VMName $vmName
+                $cred = Get-WorkingCredential -VMName $vmName
             }
 
             # Install IIS and .NET
@@ -732,7 +768,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
             # Use the same comma-separated parameter pattern as the base ArcBox script
-            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-VMCredential -VMName $vmName) -ErrorAction Stop
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCredential -VMName $vmName) -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
@@ -751,7 +787,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
         try {
             Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
 
-            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-VMCredential -VMName $vmName) -ErrorAction Stop
+            Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCredential -VMName $vmName) -ErrorAction Stop
 
             Write-Host "  $vmName Arc onboarding initiated."
         } catch {
