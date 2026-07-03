@@ -492,7 +492,7 @@ $domainNetbios = $addsDomainName.Split('.')[0]
 $domainCred = New-Object PSCredential("$domainNetbios\Administrator", $secWindowsPassword)
 
 # The Client VM (this host) is the DC. Its internal NAT IP is the DNS server for nested VMs.
-$natGatewayIP = '10.10.1.1'
+$natGatewayIP = '10.10.1.106'
 
 # First, configure DNS on all VMs to point to the DC (Client VM's NAT IP)
 Write-Host "Configuring DNS on VMs to point to domain controller ($natGatewayIP)..."
