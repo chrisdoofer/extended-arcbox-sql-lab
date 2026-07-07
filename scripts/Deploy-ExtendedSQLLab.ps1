@@ -220,6 +220,48 @@ if ($originalSqlVM) {
     Write-Host "No original $namingPrefix-SQL VM found (fresh deployment)."
     $parentSqlVhdPath = $null
 }
+
+# Same fix for ArcBox-Win2K22: convert to differencing disk so parent VHD is shared read-only
+$originalWinVM = Get-VM -Name "$namingPrefix-Win2K22" -ErrorAction SilentlyContinue
+if ($originalWinVM) {
+    $originalWinVhd = (Get-VMHardDiskDrive -VMName "$namingPrefix-Win2K22" | Select-Object -First 1).Path
+    
+    $winVhdInfo = Get-VHD -Path $originalWinVhd -ErrorAction SilentlyContinue
+    if ($winVhdInfo -and $winVhdInfo.VhdType -ne 'Differencing') {
+        Write-Host "Converting original $namingPrefix-Win2K22 to use a differencing disk..."
+        
+        if ($originalWinVM.State -eq 'Running') {
+            Stop-VM -Name "$namingPrefix-Win2K22" -Force -TurnOff
+            Start-Sleep -Seconds 5
+        }
+        
+        $originalWinDiffPath = "$Env:ArcBoxVMDir\$namingPrefix-Win2K22-diff.vhdx"
+        if (-not (Test-Path $originalWinDiffPath)) {
+            New-VHD -Path $originalWinDiffPath -ParentPath $originalWinVhd -Differencing | Out-Null
+        }
+        
+        $winDiskDrive = Get-VMHardDiskDrive -VMName "$namingPrefix-Win2K22" | Select-Object -First 1
+        Set-VMHardDiskDrive -VMName "$namingPrefix-Win2K22" -ControllerType $winDiskDrive.ControllerType -ControllerNumber $winDiskDrive.ControllerNumber -ControllerLocation $winDiskDrive.ControllerLocation -Path $originalWinDiffPath
+        
+        Write-Host "  Original Win2K22 VM now uses differencing disk: $originalWinDiffPath"
+        
+        Start-VM -Name "$namingPrefix-Win2K22"
+        Write-Host "  Original $namingPrefix-Win2K22 VM restarted successfully."
+        $parentWinVhdPath = $originalWinVhd
+    } else {
+        Write-Host "Original $namingPrefix-Win2K22 already uses a differencing disk (or is already converted)."
+        if ($originalWinVM.State -ne 'Running') {
+            Start-VM -Name "$namingPrefix-Win2K22" -ErrorAction SilentlyContinue
+        }
+        if ($winVhdInfo -and $winVhdInfo.VhdType -eq 'Differencing') {
+            $parentWinVhdPath = $winVhdInfo.ParentPath
+        } else {
+            $parentWinVhdPath = $originalWinVhd
+        }
+    }
+} else {
+    $parentWinVhdPath = $null
+}
 #endregion
 
 #region Extend DHCP Scope for additional VMs
@@ -262,13 +304,15 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
 #region Create Differencing Disks for App Servers
 Write-Header "Creating Differencing Disks for Application Server VMs"
 
-$parentWinVhd = Get-ChildItem "$Env:ArcBoxVMDir" -Filter "*Win2K22*.vhdx" | Select-Object -First 1
-
-if (-not $parentWinVhd) {
-    Write-Warning "Win2K22 parent VHD not found. Using SQL VHD as parent for app servers."
-    $parentWinVhdPath = $parentSqlVhdPath
-} else {
-    $parentWinVhdPath = $parentWinVhd.FullName
+# Use the parent path we determined above, or find it
+if (-not $parentWinVhdPath) {
+    $parentWinVhd = Get-ChildItem "$Env:ArcBoxVMDir" -Filter "*Win2K22*.vhdx" | Where-Object { $_.Name -match "$namingPrefix-Win2K22\.vhdx" } | Select-Object -First 1
+    if (-not $parentWinVhd) {
+        Write-Warning "Win2K22 parent VHD not found. Using SQL VHD as parent for app servers."
+        $parentWinVhdPath = $parentSqlVhdPath
+    } else {
+        $parentWinVhdPath = $parentWinVhd.FullName
+    }
 }
 
 Write-Host "Parent App Server VHD: $parentWinVhdPath"
