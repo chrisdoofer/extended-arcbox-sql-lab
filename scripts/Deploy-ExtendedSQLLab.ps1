@@ -132,6 +132,26 @@ function Write-Header {
     Write-Host ""
 }
 
+function Copy-VMFileWithRetry {
+    param (
+        [string]$VMName,
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [int]$MaxAttempts = 3,
+        [int]$DelaySeconds = 10
+    )
+    for ($i = 1; $i -le $MaxAttempts; $i++) {
+        try {
+            Copy-VMFile $VMName -SourcePath $SourcePath -DestinationPath $DestinationPath -CreateFullPath -FileSource Host -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $MaxAttempts) { throw }
+            Write-Host "    Copy-VMFile attempt $i failed for $VMName, retrying in ${DelaySeconds}s..." -ForegroundColor DarkYellow
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+}
+
 function Wait-ForVM {
     param ([string]$VMName, [int]$TimeoutSeconds = 300)
     $elapsed = 0
@@ -1041,7 +1061,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
 
         try {
             # Copy and run Arc agent install script
-            Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
+            Copy-VMFileWithRetry -VMName $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1"
 
             # Use the same comma-separated parameter pattern as the base ArcBox script
             Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCredential -VMName $vmName) -ErrorAction Stop
@@ -1061,7 +1081,7 @@ If running interactively: run 'az login' and 'Connect-AzAccount' before executin
         Write-Host "Onboarding $vmName to Azure Arc..."
 
         try {
-            Copy-VMFile $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
+            Copy-VMFileWithRetry -VMName $vmName -SourcePath "$Env:ArcBoxDir\agentScript\installArcAgent.ps1" -DestinationPath "C:\ArcBox\installArcAgent.ps1"
 
             Invoke-Command -VMName $vmName -ScriptBlock { powershell -File C:\ArcBox\installArcAgent.ps1 -accessToken $using:accessToken, -tenantId $using:tenantId, -subscriptionId $using:subscriptionId, -resourceGroup $using:resourceGroup, -azureLocation $using:azureLocation } -Credential (Get-WorkingCredential -VMName $vmName) -ErrorAction Stop
 
