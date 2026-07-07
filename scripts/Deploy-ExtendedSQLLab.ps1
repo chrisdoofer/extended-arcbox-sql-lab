@@ -145,8 +145,9 @@ function Wait-ForVM {
 
 #endregion
 
-# Start logging
+# Start logging (stop any existing transcript first)
 $logFilePath = "$Env:ArcBoxLogsDir\ExtendedSQLLab.log"
+try { Stop-Transcript -ErrorAction SilentlyContinue } catch { }
 Start-Transcript -Path $logFilePath -Force -ErrorAction SilentlyContinue
 
 Write-Header "Extended ArcBox SQL Lab Deployment"
@@ -304,7 +305,7 @@ if (Test-Path $sqlDscFile) {
                 -Generation 2 `
                 -VHDPath $vhdPath `
                 -SwitchName 'InternalNATSwitch' `
-                -Path "$Env:ArcBoxVMDir"
+                -Path "$Env:ArcBoxVMDir" | Out-Null
 
             Set-VM -Name $vmName -ProcessorCount 2 -AutomaticStopAction ShutDown -AutomaticStartAction Start
             Set-VMFirmware -VMName $vmName -EnableSecureBoot On
@@ -339,7 +340,7 @@ if (Test-Path $appDscFile) {
                 -Generation 2 `
                 -VHDPath $vhdPath `
                 -SwitchName 'InternalNATSwitch' `
-                -Path "$Env:ArcBoxVMDir"
+                -Path "$Env:ArcBoxVMDir" | Out-Null
 
             Set-VM -Name $vmName -ProcessorCount 2 -AutomaticStopAction ShutDown -AutomaticStartAction Start
             Set-VMFirmware -VMName $vmName -EnableSecureBoot On
@@ -520,7 +521,7 @@ Write-Host "Restarting network adapters..."
 foreach ($vmName in $readyVMs) {
     $cred = Get-WorkingCredential -VMName $vmName
     try {
-        Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $cred -ErrorAction SilentlyContinue
+        Invoke-Command -VMName $vmName -ScriptBlock { Get-NetAdapter | Restart-NetAdapter } -Credential $cred -ErrorAction SilentlyContinue | Out-Null
     } catch { }
 }
 
@@ -659,7 +660,7 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
         # Enable TCP/IP and open firewall
         Invoke-Command -VMName $vmName -ScriptBlock {
             # Open SQL port
-            New-NetFirewallRule -DisplayName 'Allow SQL Server TCP 1433' -Direction Inbound -Protocol TCP -LocalPort 1433 -Action Allow -ErrorAction SilentlyContinue
+            New-NetFirewallRule -DisplayName 'Allow SQL Server TCP 1433' -Direction Inbound -Protocol TCP -LocalPort 1433 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
             # Enable TCP/IP protocol
             $sqlInstance = "MSSQLSERVER"
@@ -826,7 +827,7 @@ while (`$true) {
             # Register and start the background workload as a scheduled task (runs continuously)
             Invoke-Command -VMName $vmName -ScriptBlock {
                 # Open firewall for SQL outbound (usually open, but ensure)
-                New-NetFirewallRule -DisplayName 'Allow SQL Outbound 1433' -Direction Outbound -Protocol TCP -RemotePort 1433 -Action Allow -ErrorAction SilentlyContinue
+                New-NetFirewallRule -DisplayName 'Allow SQL Outbound 1433' -Direction Outbound -Protocol TCP -RemotePort 1433 -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
                 # Create a scheduled task that runs the workload script at startup and continuously
                 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ArcBox\app-workload.ps1'
@@ -1117,4 +1118,4 @@ Write-Host "Total VMs: $($SqlServerCount + $AppServerCount)"
 Write-Host "Deployment completed at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 #endregion
 
-Stop-Transcript -ErrorAction SilentlyContinue
+try { Stop-Transcript } catch { }
