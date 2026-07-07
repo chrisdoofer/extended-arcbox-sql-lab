@@ -735,6 +735,22 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
             } -Credential $cred -ErrorAction Stop
         }
 
+        # Grant domain admin sysadmin permissions on SQL Server
+        $domainAdmin = "$domainNetbios\Administrator"
+        Invoke-Command -VMName $vmName -ScriptBlock {
+            try {
+                $login = Invoke-Sqlcmd -Query "SELECT name FROM sys.server_principals WHERE name = '$using:domainAdmin'" -TrustServerCertificate
+                if (-not $login) {
+                    Invoke-Sqlcmd -Query "CREATE LOGIN [$using:domainAdmin] FROM WINDOWS; ALTER SERVER ROLE sysadmin ADD MEMBER [$using:domainAdmin];" -TrustServerCertificate
+                } else {
+                    Invoke-Sqlcmd -Query "ALTER SERVER ROLE sysadmin ADD MEMBER [$using:domainAdmin];" -TrustServerCertificate -ErrorAction SilentlyContinue
+                }
+                Write-Host "  Granted sysadmin to $using:domainAdmin on $env:COMPUTERNAME"
+            } catch {
+                Write-Warning "  Could not grant sysadmin on ${env:COMPUTERNAME}: $_"
+            }
+        } -Credential $cred -ErrorAction Stop
+
         Write-Host "  $vmName configured successfully."
     } catch {
         Write-Warning "Error configuring ${vmName}: $_"
