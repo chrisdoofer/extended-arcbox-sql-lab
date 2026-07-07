@@ -1157,6 +1157,51 @@ if (-not $SkipArcOnboarding) {
 }
 #endregion
 
+#region Tag Arc Resources by Application
+if (-not $SkipArcOnboarding) {
+    Write-Header "Tagging Arc Resources by Application"
+
+    # Define application groupings with tags
+    $appGroupings = @(
+        @{ Application = "ERP-Finance"; Environment = "Production"; Servers = @("$namingPrefix-SQL01", "$namingPrefix-APP01") }
+        @{ Application = "CRM"; Environment = "Production"; Servers = @("$namingPrefix-SQL02", "$namingPrefix-APP02") }
+        @{ Application = "HR-Payroll"; Environment = "Production"; Servers = @("$namingPrefix-SQL03", "$namingPrefix-APP03") }
+        @{ Application = "Inventory-WMS"; Environment = "Production"; Servers = @("$namingPrefix-SQL04") }
+        @{ Application = "E-Commerce"; Environment = "Production"; Servers = @("$namingPrefix-SQL05", "$namingPrefix-APP04") }
+        @{ Application = "Analytics"; Environment = "Production"; Servers = @("$namingPrefix-SQL06", "$namingPrefix-APP05") }
+        @{ Application = "Document-Management"; Environment = "Production"; Servers = @("$namingPrefix-SQL07") }
+        @{ Application = "Legacy-LOB"; Environment = "Production"; Servers = @("$namingPrefix-SQL08") }
+        @{ Application = "DevTest"; Environment = "Development"; Servers = @("$namingPrefix-SQL09") }
+        @{ Application = "Compliance-Audit"; Environment = "Production"; Servers = @("$namingPrefix-SQL10") }
+    )
+
+    foreach ($group in $appGroupings) {
+        foreach ($serverName in $group.Servers) {
+            $tier = if ($serverName -match 'SQL') { "Database" } else { "Application" }
+            $tags = @{
+                Application = $group.Application
+                Environment = $group.Environment
+                Tier        = $tier
+            }
+
+            try {
+                $arcServer = Get-AzConnectedMachine -Name $serverName -ResourceGroupName $resourceGroup -ErrorAction SilentlyContinue
+                if ($arcServer) {
+                    Update-AzConnectedMachine -Name $serverName -ResourceGroupName $resourceGroup -Tag $tags -ErrorAction Stop | Out-Null
+                    Write-Host "  Tagged $serverName -> Application: $($group.Application), Tier: $tier, Env: $($group.Environment)"
+                } else {
+                    Write-Warning "  $serverName not found in Arc (skipping tags)"
+                }
+            } catch {
+                Write-Warning "  Could not tag ${serverName}: $_"
+            }
+        }
+    }
+
+    Write-Host "Tagging complete."
+}
+#endregion
+
 #region Summary
 Write-Header "Deployment Summary"
 
