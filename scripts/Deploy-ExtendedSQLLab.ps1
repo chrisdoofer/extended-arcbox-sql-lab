@@ -45,12 +45,17 @@ $resourceGroup = $env:resourceGroup
 $resourceTags = $env:resourceTags
 
 # VM Credentials
-# All differencing disk VMs inherit the parent VHD's computer name ("ArcBox-SQL") in their SAM.
-# PowerShell Direct uses -VMName (Hyper-V name) to target the specific VM, but the
-# credential domain must match the GUEST's internal hostname from the SAM database.
-# So we use "ArcBox-SQL\Administrator" for initial access, then rename.
+# The script must be idempotent - VMs could be in any of these states:
+#   1. Fresh boot (parent hostname): ArcBox-SQL\Administrator
+#   2. Renamed (local): ArcBox-SQL01\Administrator
+#   3. Domain-joined: doofer\Administrator
 $nestedWindowsPassword = 'JS123!!'
 $secWindowsPassword = ConvertTo-SecureString $nestedWindowsPassword -AsPlainText -Force
+
+# Domain credential (works after domain join)
+$domainName = 'doofer.co.uk'
+$domainNetbios = 'doofer'
+$domainCred = New-Object System.Management.Automation.PSCredential ("$domainNetbios\Administrator", $secWindowsPassword)
 
 # Initial credential uses parent VHD hostname (same for all VMs before rename)
 $sqlParentHostname = "$namingPrefix-SQL"
@@ -62,16 +67,29 @@ function Get-VMCredential {
     return New-Object System.Management.Automation.PSCredential ("$VMName\Administrator", $secWindowsPassword)
 }
 
-# Try both credentials (post-rename first, fall back to initial)
+# Try all credential types in order: domain, renamed local, parent hostname
+# This makes the script idempotent regardless of VM state
 function Get-WorkingCredential {
     param([string]$VMName)
-    $renamedCred = Get-VMCredential -VMName $VMName
-    try {
-        Invoke-Command -VMName $VMName -ScriptBlock { $true } -Credential $renamedCred -ErrorAction Stop | Out-Null
-        return $renamedCred
-    } catch {
-        return $initialCred
+    
+    $credsToTry = @(
+        $domainCred                          # domain-joined state
+        (Get-VMCredential -VMName $VMName)   # renamed local state
+        $initialCred                          # fresh boot state
+    )
+    
+    foreach ($cred in $credsToTry) {
+        try {
+            Invoke-Command -VMName $VMName -ScriptBlock { $true } -Credential $cred -ErrorAction Stop | Out-Null
+            return $cred
+        } catch {
+            continue
+        }
     }
+    
+    # None worked - return domain cred as best guess (will fail with clear error)
+    Write-Warning "  No credential worked for $VMName (tried domain, local, parent)"
+    return $domainCred
 }
 
 # SQL Server VM definitions
@@ -352,7 +370,7 @@ function Wait-ForVMReady {
         try {
             $result = Invoke-Command -VMName $VMName -ScriptBlock { hostname } -Credential $Credential -ErrorAction Stop
             if ($result) {
-                Write-Host "    READY (internal hostname: $result, attempt $attempt)" -ForegroundColor Green
+                Write-Host "    READY (hostname: $result, attempt $attempt)" -ForegroundColor Green
                 return $true
             }
         } catch {
@@ -367,39 +385,61 @@ function Wait-ForVMReady {
     return $false
 }
 
+# Smart wait: tries all credential types so it works regardless of VM state
+function Wait-ForVMReadyAuto {
+    param (
+        [string]$VMName,
+        [int]$TimeoutSeconds = 600
+    )
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $attempt = 0
+    
+    $credsToTry = @(
+        $domainCred
+        (Get-VMCredential -VMName $VMName)
+        $initialCred
+        (New-Object PSCredential("$namingPrefix-Win2K22\Administrator", $secWindowsPassword))
+    )
+    
+    while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        $attempt++
+        foreach ($cred in $credsToTry) {
+            try {
+                $result = Invoke-Command -VMName $VMName -ScriptBlock { hostname } -Credential $cred -ErrorAction Stop
+                if ($result) {
+                    Write-Host "    READY (hostname: $result, cred: $($cred.UserName))" -ForegroundColor Green
+                    return $true
+                }
+            } catch { }
+        }
+        if ($attempt -le 3 -or $attempt % 10 -eq 0) {
+            Write-Host "    Attempt ${attempt}: no credential worked yet..." -ForegroundColor DarkYellow
+        }
+        Start-Sleep -Seconds 10
+    }
+    Write-Host "    TIMEOUT after $attempt attempts (tried all credential types)" -ForegroundColor Red
+    return $false
+}
+
 Write-Host "Waiting for VMs to become responsive (this may take 3-5 minutes with 15 VMs)..."
-Write-Host "Using credential: $($initialCred.UserName) (parent VHD hostname)"
+Write-Host "Trying credentials: domain ($domainNetbios\Administrator), local (<VM>\Administrator), parent ($sqlParentHostname\Administrator)"
 Write-Host ""
 
 $readyVMs = @()
 $failedVMs = @()
 
-# Wait for SQL VMs
+# Wait for all VMs using auto-credential detection
 foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
     $vmName = $sql.Name
     Write-Host "  Waiting for ${vmName}..."
-    $ready = Wait-ForVMReady -VMName $vmName -Credential $initialCred -TimeoutSeconds 600
+    $ready = Wait-ForVMReadyAuto -VMName $vmName -TimeoutSeconds 600
     if ($ready) { $readyVMs += $vmName } else { $failedVMs += $vmName }
-}
-
-# Wait for App VMs (may use different parent hostname if Win2K22 VHD)
-$appInitialCred = $initialCred
-if ($parentWinVhdPath -ne $parentSqlVhdPath) {
-    # App servers come from Win2K22 parent - try to determine its hostname
-    # Default assumption: the Win2K22 VHD's hostname is 'ArcBox-Win2K22'
-    $appInitialCred = New-Object PSCredential("$namingPrefix-Win2K22\Administrator", $secWindowsPassword)
 }
 
 foreach ($app in $appServers | Select-Object -First $AppServerCount) {
     $vmName = $app.Name
     Write-Host "  Waiting for ${vmName}..."
-    # Try SQL parent cred first (in case Win2K22 VHD wasn't found and SQL was used)
-    $ready = Wait-ForVMReady -VMName $vmName -Credential $appInitialCred -TimeoutSeconds 300
-    if (-not $ready -and $appInitialCred.UserName -ne $initialCred.UserName) {
-        Write-Host "    Retrying with SQL parent credential..."
-        $ready = Wait-ForVMReady -VMName $vmName -Credential $initialCred -TimeoutSeconds 300
-        if ($ready) { $appInitialCred = $initialCred }  # SQL VHD was used as fallback
-    }
+    $ready = Wait-ForVMReadyAuto -VMName $vmName -TimeoutSeconds 600
     if ($ready) { $readyVMs += $vmName } else { $failedVMs += $vmName }
 }
 
@@ -481,12 +521,7 @@ Start-Sleep -Seconds 30
 #endregion
 
 #region Join VMs to domain
-Write-Header "Joining VMs to doofer.co.uk domain"
-
-# Domain details
-# Domain details - hardcoded to match actual environment
-$addsDomainName = 'doofer.co.uk'
-$domainNetbios = 'doofer'
+Write-Header "Joining VMs to $domainName domain"
 
 # DC IP for DNS configuration
 $dcIP = '10.10.1.106'
@@ -523,7 +558,7 @@ if ($testVM) {
                 Resolve-DnsName $using:addsDomainName -ErrorAction Stop
             } -Credential $testCred -ErrorAction Stop
             if ($dnsTest) {
-                Write-Host "Domain $addsDomainName is resolvable from VMs." -ForegroundColor Green
+                Write-Host "Domain $domainName is resolvable from VMs." -ForegroundColor Green
                 $dcReachable = $true
                 break
             }
@@ -558,7 +593,7 @@ if ($dcReachable) {
                 continue
             }
 
-            Write-Host "  Joining $vmName to $addsDomainName..."
+            Write-Host "  Joining $vmName to $domainName..."
             Invoke-Command -VMName $vmName -ScriptBlock {
                 $secPass = ConvertTo-SecureString $using:domainPass -AsPlainText -Force
                 $cred = New-Object PSCredential($using:domainUser, $secPass)
@@ -592,7 +627,7 @@ if ($dcReachable) {
     Write-Host "Domain join complete."
 } else {
     Write-Warning "Domain controller not reachable from VMs. Skipping domain join."
-    Write-Warning "Ensure DC at $dcIP is running and DNS zone for $addsDomainName exists."
+    Write-Warning "Ensure DC at $dcIP is running and DNS zone for $domainName exists."
 }
 #endregion
 
