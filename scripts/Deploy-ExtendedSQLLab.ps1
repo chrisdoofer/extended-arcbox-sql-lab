@@ -481,28 +481,25 @@ Start-Sleep -Seconds 30
 #endregion
 
 #region Join VMs to domain
-Write-Header "Joining VMs to jumpstart.local domain"
+Write-Header "Joining VMs to doofer.co.uk domain"
 
-# Domain details (matches base ArcBox AD DS configuration)
-# In ArcBox ITPro, the Client VM itself IS the domain controller.
-# The DC is reachable from nested VMs via the NAT gateway IP (10.10.1.1).
+# Domain details
 $addsDomainName = $env:addsDomainName
 if (-not $addsDomainName) { $addsDomainName = 'doofer.co.uk' }
 $domainNetbios = $addsDomainName.Split('.')[0]
-$domainCred = New-Object PSCredential("$domainNetbios\Administrator", $secWindowsPassword)
 
-# The Client VM (this host) is the DC. Its internal NAT IP is the DNS server for nested VMs.
-$natGatewayIP = '10.10.1.106'
+# DC IP for DNS configuration
+$dcIP = '10.10.1.106'
 
-# First, configure DNS on all VMs to point to the DC (Client VM's NAT IP)
-Write-Host "Configuring DNS on VMs to point to domain controller ($natGatewayIP)..."
+# First, configure DNS on all VMs to point to the DC
+Write-Host "Configuring DNS on VMs to point to domain controller ($dcIP)..."
 foreach ($vmName in $readyVMs) {
     $cred = Get-WorkingCredential -VMName $vmName
     try {
         Invoke-Command -VMName $vmName -ScriptBlock {
             $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
             if ($adapter) {
-                Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $using:natGatewayIP
+                Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses $using:dcIP
             }
         } -Credential $cred -ErrorAction Stop
     } catch {
@@ -534,6 +531,10 @@ if ($testVM) {
 
 if ($dcReachable) {
     $joinedVMs = @()
+    # Build credential components to pass as strings (PSCredential can't serialize via $using: in PS Direct)
+    $domainUser = "$domainNetbios\Administrator"
+    $domainPass = $nestedWindowsPassword
+
     foreach ($vmName in $readyVMs) {
         $localCred = Get-WorkingCredential -VMName $vmName
         try {
@@ -549,7 +550,9 @@ if ($dcReachable) {
 
             Write-Host "  Joining $vmName to $addsDomainName..."
             Invoke-Command -VMName $vmName -ScriptBlock {
-                Add-Computer -DomainName $using:addsDomainName -Credential $using:domainCred -Force -Restart
+                $secPass = ConvertTo-SecureString $using:domainPass -AsPlainText -Force
+                $cred = New-Object PSCredential($using:domainUser, $secPass)
+                Add-Computer -DomainName $using:addsDomainName -Credential $cred -Force -Restart
             } -Credential $localCred -ErrorAction Stop
             $joinedVMs += $vmName
         } catch {
@@ -563,7 +566,7 @@ if ($dcReachable) {
         Write-Host "Waiting for $($joinedVMs.Count) VMs to reboot after domain join (90 seconds)..."
         Start-Sleep -Seconds 90
 
-        # Verify VMs are back online (now use domain cred or local cred)
+        # Verify VMs are back online
         Write-Host "Verifying VMs are back online after domain join..."
         foreach ($vmName in $joinedVMs) {
             $cred = Get-WorkingCredential -VMName $vmName
@@ -579,9 +582,7 @@ if ($dcReachable) {
     Write-Host "Domain join complete."
 } else {
     Write-Warning "Domain controller not reachable from VMs. Skipping domain join."
-    Write-Warning "Ensure the Client VM has AD DS installed and DNS is configured."
-    Write-Warning "VMs will operate as workgroup members. To join later, run:"
-    Write-Warning "  Add-Computer -DomainName '$addsDomainName' -Credential (Get-Credential) -Restart"
+    Write-Warning "Ensure DC at $dcIP is running and DNS zone for $addsDomainName exists."
 }
 #endregion
 
@@ -735,7 +736,58 @@ try {
             $healthPage | Set-Content -Path $healthPagePath -Force
             Copy-VMFile $vmName -SourcePath $healthPagePath -DestinationPath "C:\inetpub\wwwroot\default.aspx" -CreateFullPath -FileSource Host -Force
 
-            Write-Host "  $vmName app deployment complete."
+            # Deploy a PERSISTENT background workload that maintains active SQL connections
+            # This creates visible netstat connections (TCP 1433) from app server to SQL server
+            $targetDB = $sqlServers | Where-Object { $_.Name -eq $sqlTarget } | Select-Object -ExpandProperty DB
+            $bgWorkload = @"
+# Background SQL Workload - $($app.Role)
+# Maintains persistent connections to $sqlTarget for demo visibility
+`$ErrorActionPreference = 'SilentlyContinue'
+`$sqlServer = '$sqlTarget'
+`$database = '$targetDB'
+`$connString = "Server=`$sqlServer;Database=`$database;Trusted_Connection=True;TrustServerCertificate=True;"
+
+while (`$true) {
+    try {
+        # Open a connection and run periodic queries (simulates app activity)
+        `$conn = New-Object System.Data.SqlClient.SqlConnection(`$connString)
+        `$conn.Open()
+        
+        # Keep connection alive with periodic queries for 60 seconds
+        for (`$i = 0; `$i -lt 12; `$i++) {
+            `$cmd = `$conn.CreateCommand()
+            `$cmd.CommandText = "SELECT COUNT(*) FROM sys.tables; WAITFOR DELAY '00:00:05';"
+            `$cmd.ExecuteScalar() | Out-Null
+        }
+        
+        `$conn.Close()
+    } catch {
+        Start-Sleep -Seconds 10
+    }
+    Start-Sleep -Seconds 2
+}
+"@
+            $bgWorkloadPath = "$ExtendedLabDir\$vmName-workload.ps1"
+            $bgWorkload | Set-Content -Path $bgWorkloadPath -Force
+            Copy-VMFile $vmName -SourcePath $bgWorkloadPath -DestinationPath "C:\ArcBox\app-workload.ps1" -CreateFullPath -FileSource Host -Force
+
+            # Register and start the background workload as a scheduled task (runs continuously)
+            Invoke-Command -VMName $vmName -ScriptBlock {
+                # Open firewall for SQL outbound (usually open, but ensure)
+                New-NetFirewallRule -DisplayName 'Allow SQL Outbound 1433' -Direction Outbound -Protocol TCP -RemotePort 1433 -Action Allow -ErrorAction SilentlyContinue
+
+                # Create a scheduled task that runs the workload script at startup and continuously
+                $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ArcBox\app-workload.ps1'
+                $trigger = New-ScheduledTaskTrigger -AtStartup
+                $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999 -ExecutionTimeLimit ([TimeSpan]::Zero)
+                Register-ScheduledTask -TaskName 'AppSQLWorkload' -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+
+                # Start it immediately
+                Start-ScheduledTask -TaskName 'AppSQLWorkload'
+                Write-Host "Background SQL workload started on $env:COMPUTERNAME"
+            } -Credential $cred -ErrorAction Stop
+
+            Write-Host "  $vmName app deployment complete (persistent SQL connections active)."
         } catch {
             Write-Warning "Error configuring app server ${vmName}: $_"
         }
