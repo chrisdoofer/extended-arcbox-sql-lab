@@ -562,7 +562,7 @@ if ($testVM) {
             $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
                 # Clear DNS cache and retry
                 Clear-DnsClientCache
-                Resolve-DnsName $using:addsDomainName -ErrorAction Stop
+                Resolve-DnsName $using:domainName -ErrorAction Stop
             } -Credential $testCred -ErrorAction Stop
             if ($dnsTest) {
                 Write-Host "Domain $domainName is resolvable from VMs." -ForegroundColor Green
