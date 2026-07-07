@@ -484,9 +484,9 @@ Start-Sleep -Seconds 30
 Write-Header "Joining VMs to doofer.co.uk domain"
 
 # Domain details
-$addsDomainName = $env:addsDomainName
-if (-not $addsDomainName) { $addsDomainName = 'doofer.co.uk' }
-$domainNetbios = $addsDomainName.Split('.')[0]
+# Domain details - hardcoded to match actual environment
+$addsDomainName = 'doofer.co.uk'
+$domainNetbios = 'doofer'
 
 # DC IP for DNS configuration
 $dcIP = '10.10.1.106'
@@ -508,24 +508,34 @@ foreach ($vmName in $readyVMs) {
     }
 }
 
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 10
 
-# Verify DC is reachable from a VM
+# Verify DC is reachable from a VM (with retry)
 $dcReachable = $false
 $testVM = $readyVMs | Select-Object -First 1
 if ($testVM) {
     $testCred = Get-WorkingCredential -VMName $testVM
-    try {
-        $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
-            Resolve-DnsName $using:addsDomainName -ErrorAction Stop
-        } -Credential $testCred -ErrorAction Stop
-        if ($dnsTest) {
-            Write-Host "Domain $addsDomainName is resolvable from VMs." -ForegroundColor Green
-            $dcReachable = $true
+    for ($dnsAttempt = 1; $dnsAttempt -le 3; $dnsAttempt++) {
+        try {
+            $dnsTest = Invoke-Command -VMName $testVM -ScriptBlock {
+                # Clear DNS cache and retry
+                Clear-DnsClientCache
+                Resolve-DnsName $using:addsDomainName -ErrorAction Stop
+            } -Credential $testCred -ErrorAction Stop
+            if ($dnsTest) {
+                Write-Host "Domain $addsDomainName is resolvable from VMs." -ForegroundColor Green
+                $dcReachable = $true
+                break
+            }
+        } catch {
+            $errMsg = $_.Exception.Message
+            if ($dnsAttempt -lt 3) {
+                Write-Host "  DNS attempt $dnsAttempt failed, retrying in 10s... ($errMsg)" -ForegroundColor Yellow
+                Start-Sleep -Seconds 10
+            } else {
+                Write-Warning "DNS resolution failed from ${testVM}: $errMsg"
+            }
         }
-    } catch {
-        $errMsg = $_.Exception.Message
-        Write-Warning "DNS resolution failed from ${testVM}: $errMsg"
     }
 }
 
