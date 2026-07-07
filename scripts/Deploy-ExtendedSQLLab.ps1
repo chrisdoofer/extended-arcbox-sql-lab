@@ -28,6 +28,9 @@ param (
 $ErrorActionPreference = $env:ErrorActionPreference
 if (-not $ErrorActionPreference) { $ErrorActionPreference = 'Continue' }
 
+# Prevent interactive credential prompts - all Invoke-Command calls should use pre-built creds
+$PSDefaultParameterValues['Invoke-Command:ErrorAction'] = 'Stop'
+
 #region Configuration
 $Env:ArcBoxDir = 'C:\ArcBox'
 $Env:ArcBoxLogsDir = "$Env:ArcBoxDir\Logs"
@@ -67,15 +70,18 @@ function Get-VMCredential {
     return New-Object System.Management.Automation.PSCredential ("$VMName\Administrator", $secWindowsPassword)
 }
 
-# Try all credential types in order: domain, renamed local, parent hostname
+# Try all credential types in order: domain, renamed local, parent hostnames
 # This makes the script idempotent regardless of VM state
 function Get-WorkingCredential {
     param([string]$VMName)
     
+    $appParentCred = New-Object System.Management.Automation.PSCredential ("$namingPrefix-Win2K22\Administrator", $secWindowsPassword)
+    
     $credsToTry = @(
         $domainCred                          # domain-joined state
         (Get-VMCredential -VMName $VMName)   # renamed local state
-        $initialCred                          # fresh boot state
+        $initialCred                          # fresh boot (SQL parent hostname)
+        $appParentCred                       # fresh boot (Win2K22 parent hostname)
     )
     
     foreach ($cred in $credsToTry) {
@@ -88,7 +94,7 @@ function Get-WorkingCredential {
     }
     
     # None worked - return domain cred as best guess (will fail with clear error)
-    Write-Warning "  No credential worked for $VMName (tried domain, local, parent)"
+    Write-Warning "  No credential worked for $VMName (tried domain, local, SQL parent, Win2K22 parent)"
     return $domainCred
 }
 
@@ -464,10 +470,11 @@ $renameNeeded = @()
 
 foreach ($vmName in $readyVMs) {
     try {
-        # Determine which credential works for this VM
-        $cred = $initialCred
-        if ($vmName -match 'APP' -and $appInitialCred.UserName -ne $initialCred.UserName) {
-            $cred = $appInitialCred
+        # Use auto-credential detection (works for fresh, renamed, or domain-joined VMs)
+        $cred = Get-WorkingCredential -VMName $vmName
+        if (-not $cred) {
+            Write-Warning "  Skipping $vmName - no working credential found"
+            continue
         }
         
         $currentHostname = Invoke-Command -VMName $vmName -ScriptBlock { hostname } -Credential $cred -ErrorAction Stop
@@ -597,7 +604,7 @@ if ($dcReachable) {
             Invoke-Command -VMName $vmName -ScriptBlock {
                 $secPass = ConvertTo-SecureString $using:domainPass -AsPlainText -Force
                 $cred = New-Object PSCredential($using:domainUser, $secPass)
-                Add-Computer -DomainName $using:addsDomainName -Credential $cred -Force -Restart
+                Add-Computer -DomainName $using:domainName -Credential $cred -Force -Restart
             } -Credential $localCred -ErrorAction Stop
             $joinedVMs += $vmName
         } catch {
