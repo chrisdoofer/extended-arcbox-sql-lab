@@ -170,14 +170,14 @@ WHILE @j <= 50000
 BEGIN
     INSERT INTO dbo.AuditEvents (EventType, Severity, Source, UserPrincipal, Action, Resource, Result, Timestamp)
     VALUES (
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 6) + 1, 'Authentication','Authorization','DataAccess','Configuration','Network','System'),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 4) + 1, 'Info','Warning','Error','Critical'),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 4) + 1, 'ActiveDirectory','SQLServer','WebApp','Firewall'),
-        'user' + CAST(ABS(CHECKSUM(NEWID())) % 100 AS NVARCHAR(5)) + '@contoso.com',
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, 'Login','Query','Modify','Delete','Export'),
-        '/resources/' + CHOOSE((ABS(CHECKSUM(NEWID())) % 4) + 1, 'database','server','application','network') + '/' + CAST(ABS(CHECKSUM(NEWID())) % 50 AS NVARCHAR(5)),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 3) + 1, 'Success','Failure','Denied'),
-        DATEADD(MINUTE, -ABS(CHECKSUM(NEWID())) % 525600, GETDATE())
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 6) + 1, 'Authentication','Authorization','DataAccess','Configuration','Network','System'),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 4) + 1, 'Info','Warning','Error','Critical'),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 4) + 1, 'ActiveDirectory','SQLServer','WebApp','Firewall'),
+        'user' + CAST(ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 100 AS NVARCHAR(5)) + '@contoso.com',
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5) + 1, 'Login','Query','Modify','Delete','Export'),
+        '/resources/' + CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 4) + 1, 'database','server','application','network') + '/' + CAST(ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 50 AS NVARCHAR(5)),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 3) + 1, 'Success','Failure','Denied'),
+        DATEADD(MINUTE, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 525600, GETDATE())
     );
     SET @j = @j + 1;
 END;
@@ -204,3 +204,4 @@ GO
 
 PRINT 'SQL10 - ComplianceAudit database setup complete.';
 GO
+

@@ -172,8 +172,8 @@ BEGIN
     VALUES (
         'Suite-' + CAST((@m % 10) + 1 AS NVARCHAR(5)),
         'Test_' + CAST(@m AS NVARCHAR(10)),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 4) + 1, 'Passed','Passed','Passed','Failed'),
-        50 + ABS(CHECKSUM(NEWID())) % 5000
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 4) + 1, 'Passed','Passed','Passed','Failed'),
+        50 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5000
     );
     SET @m = @m + 1;
 END;
@@ -181,3 +181,4 @@ GO
 
 PRINT 'SQL09 - DevTest databases (AppDev_v1, AppDev_v2, StagingDB, IntegrationTestDB) setup complete.';
 GO
+

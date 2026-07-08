@@ -133,11 +133,11 @@ WHILE @j <= 5000
 BEGIN
     INSERT INTO dbo.InventoryLevels (ProductID, WarehouseID, QuantityOnHand, QuantityReserved, ReorderPoint, BinLocation)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 1000) + 1,
-        (ABS(CHECKSUM(NEWID())) % 5) + 1,
-        ABS(CHECKSUM(NEWID())) % 1000,
-        ABS(CHECKSUM(NEWID())) % 100,
-        50 + ABS(CHECKSUM(NEWID())) % 200,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1000) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5) + 1,
+        ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1000,
+        ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 100,
+        50 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 200,
         'A' + CAST((@j % 50) + 1 AS NVARCHAR(3)) + '-' + CAST((@j % 10) + 1 AS NVARCHAR(2))
     );
     SET @j = @j + 1;
@@ -146,3 +146,4 @@ GO
 
 PRINT 'SQL04 - InventoryWMS database setup complete.';
 GO
+

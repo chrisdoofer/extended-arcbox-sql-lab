@@ -140,7 +140,7 @@ BEGIN
         'Buyer' + CAST(@i AS NVARCHAR(10)),
         'Family' + CAST(@i % 300 AS NVARCHAR(10)),
         '{"newsletter": true, "theme": "' + CHOOSE((@i % 3) + 1, 'light','dark','auto') + '", "currency": "USD"}',
-        ABS(CHECKSUM(NEWID())) % 5000
+        ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5000
     );
     SET @i = @i + 1;
 END;
@@ -157,7 +157,7 @@ BEGIN
         'Brand-' + CAST(@j % 30 AS NVARCHAR(5)),
         ROUND(10 + RAND() * 500, 2),
         ROUND(5 + RAND() * 200, 2),
-        ABS(CHECKSUM(NEWID())) % 500,
+        ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 500,
         '{"color": "' + CHOOSE((@j % 4) + 1, 'red','blue','green','black') + '", "weight_kg": ' + CAST(ROUND(0.5 + RAND() * 10, 1) AS NVARCHAR(10)) + '}'
     );
     SET @j = @j + 1;
@@ -171,9 +171,9 @@ BEGIN
     INSERT INTO dbo.Orders (OrderNumber, CustomerID, OrderDate, Status, SubTotal, TaxAmount, ShippingAmount, PaymentMethod)
     VALUES (
         'ORD-' + RIGHT('000000' + CAST(@k AS NVARCHAR(6)), 6),
-        (ABS(CHECKSUM(NEWID())) % 3000) + 1,
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 730, GETDATE()),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, 'Completed','Shipped','Processing','Pending','Cancelled'),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 3000) + 1,
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 730, GETDATE()),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5) + 1, 'Completed','Shipped','Processing','Pending','Cancelled'),
         ROUND(20 + RAND() * 500, 2),
         ROUND(2 + RAND() * 50, 2),
         ROUND(5 + RAND() * 25, 2),
@@ -189,9 +189,9 @@ WHILE @m <= 25000
 BEGIN
     INSERT INTO dbo.OrderItems (OrderID, ProductID, Quantity, UnitPrice)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 10000) + 1,
-        (ABS(CHECKSUM(NEWID())) % 500) + 1,
-        1 + ABS(CHECKSUM(NEWID())) % 5,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10000) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 500) + 1,
+        1 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5,
         ROUND(10 + RAND() * 200, 2)
     );
     SET @m = @m + 1;
@@ -200,3 +200,4 @@ GO
 
 PRINT 'SQL05 - ECommerceStore database setup complete.';
 GO
+

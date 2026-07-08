@@ -148,10 +148,10 @@ BEGIN
         (@j % 8) + 1,
         'doc_' + CAST(@j AS NVARCHAR(10)) + CHOOSE((@j % 4) + 1, '.pdf','.docx','.xlsx','.pptx'),
         CHOOSE((@j % 4) + 1, '.pdf','.docx','.xlsx','.pptx'),
-        50 + ABS(CHECKSUM(NEWID())) % 10000,
+        50 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10000,
         CHOOSE((@j % 4) + 1, 'application/pdf','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.openxmlformats-officedocument.presentationml.presentation'),
         CHOOSE((@j % 5) + 1, 'finance,quarterly','legal,contract','hr,policy','operations,report','technical,spec'),
-        (ABS(CHECKSUM(NEWID())) % 100) + 1
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 100) + 1
     );
     SET @j = @j + 1;
 END;
@@ -163,11 +163,11 @@ WHILE @k <= 10000
 BEGIN
     INSERT INTO dbo.AuditLog (DocumentID, UserID, Action, Details, Timestamp)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 2000) + 1,
-        (ABS(CHECKSUM(NEWID())) % 100) + 1,
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 6) + 1, 'View','Download','Edit','Share','Print','Delete'),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 2000) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 100) + 1,
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 6) + 1, 'View','Download','Edit','Share','Print','Delete'),
         'Action performed on document',
-        DATEADD(MINUTE, -ABS(CHECKSUM(NEWID())) % 525600, GETDATE())
+        DATEADD(MINUTE, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 525600, GETDATE())
     );
     SET @k = @k + 1;
 END;
@@ -175,3 +175,5 @@ GO
 
 PRINT 'SQL07 - DocumentMgmt database setup complete.';
 GO
+
+

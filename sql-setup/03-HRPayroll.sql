@@ -125,10 +125,10 @@ BEGIN
         'Last' + CAST(@i % 100 AS NVARCHAR(10)),
         CAST(100 + (@i % 900) AS NVARCHAR(3)) + '-' + RIGHT('00' + CAST(@i % 100 AS NVARCHAR(2)), 2) + '-' + RIGHT('0000' + CAST(@i AS NVARCHAR(4)), 4),
         'emp' + CAST(@i AS NVARCHAR(10)) + '@contoso.com',
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 3650, GETDATE()),
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 3650, GETDATE()),
         (@i % 10) + 1,
         CHOOSE((@i % 6) + 1, 'Engineer','Analyst','Manager','Director','Specialist','Coordinator'),
-        50000 + (ABS(CHECKSUM(NEWID())) % 150000)
+        50000 + (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 150000)
     );
     SET @i = @i + 1;
 END;
@@ -140,7 +140,7 @@ WHILE @j <= 6000
 BEGIN
     INSERT INTO dbo.PayrollRecords (EmployeeID, PayPeriodStart, PayPeriodEnd, GrossPay, FederalTax, StateTax, NetPay, PayDate)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 500) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 500) + 1,
         DATEADD(DAY, -(@j * 14), GETDATE()),
         DATEADD(DAY, -((@j * 14) - 13), GETDATE()),
         ROUND(3000 + RAND() * 7000, 2),
@@ -155,3 +155,4 @@ GO
 
 PRINT 'SQL03 - HRPayroll database setup complete.';
 GO
+

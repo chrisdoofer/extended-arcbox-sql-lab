@@ -106,7 +106,7 @@ BEGIN
         'Contact' + CAST(@i AS NVARCHAR(10)),
         'Surname' + CAST(@i % 200 AS NVARCHAR(10)),
         'contact' + CAST(@i AS NVARCHAR(10)) + '@contoso.com',
-        '+1-555-' + RIGHT('0000' + CAST(ABS(CHECKSUM(NEWID())) % 10000 AS NVARCHAR(4)), 4),
+        '+1-555-' + RIGHT('0000' + CAST(ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10000 AS NVARCHAR(4)), 4),
         'Company ' + CAST(@i % 100 AS NVARCHAR(10)),
         CHOOSE((@i % 5) + 1, 'Seattle','New York','Chicago','Dallas','Miami'),
         'United States'
@@ -122,11 +122,11 @@ BEGIN
     INSERT INTO dbo.Opportunities (OpportunityName, ContactID, Stage, Amount, Probability, ExpectedCloseDate, AssignedTo)
     VALUES (
         'Deal-' + CAST(@j AS NVARCHAR(10)),
-        (ABS(CHECKSUM(NEWID())) % 2000) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 2000) + 1,
         CHOOSE((@j % 5) + 1, 'Prospecting','Qualification','Proposal','Negotiation','Closed Won'),
         ROUND(RAND() * 100000, 2),
-        (ABS(CHECKSUM(NEWID())) % 100),
-        DATEADD(DAY, ABS(CHECKSUM(NEWID())) % 180, GETDATE()),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 100),
+        DATEADD(DAY, ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 180, GETDATE()),
         'Rep' + CAST((@j % 10) + 1 AS NVARCHAR(5))
     );
     SET @j = @j + 1;
@@ -135,3 +135,4 @@ GO
 
 PRINT 'SQL02 - ContososCRM database setup complete.';
 GO
+

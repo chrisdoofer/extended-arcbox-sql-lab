@@ -128,9 +128,9 @@ WHILE @i <= 5000
 BEGIN
     INSERT INTO dbo.GeneralLedger (TransactionDate, PostingDate, AccountID, DebitAmount, CreditAmount, Description, ReferenceNumber, PostedBy)
     VALUES (
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 365, GETDATE()),
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 365, GETDATE()),
-        (ABS(CHECKSUM(NEWID())) % 10) + 1,
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 365, GETDATE()),
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 365, GETDATE()),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10) + 1,
         CASE WHEN @i % 2 = 0 THEN ROUND(RAND() * 10000, 2) ELSE 0 END,
         CASE WHEN @i % 2 = 1 THEN ROUND(RAND() * 10000, 2) ELSE 0 END,
         'Transaction ' + CAST(@i AS NVARCHAR(10)),
@@ -143,3 +143,4 @@ GO
 
 PRINT 'SQL01 - FinanceERP database setup complete.';
 GO
+

@@ -112,11 +112,11 @@ WHILE @i <= 100000
 BEGIN
     INSERT INTO dbo.FactSales (DateKey, ProductKey, CustomerKey, StoreKey, Quantity, UnitPrice, TotalAmount, CostAmount, ProfitAmount)
     VALUES (
-        CONVERT(INT, FORMAT(DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 1095, GETDATE()), 'yyyyMMdd')),
-        (ABS(CHECKSUM(NEWID())) % 500) + 1,
-        (ABS(CHECKSUM(NEWID())) % 3000) + 1,
-        (ABS(CHECKSUM(NEWID())) % 20) + 1,
-        1 + ABS(CHECKSUM(NEWID())) % 10,
+        CONVERT(INT, FORMAT(DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1095, GETDATE()), 'yyyyMMdd')),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 500) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 3000) + 1,
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 20) + 1,
+        1 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10,
         ROUND(5 + RAND() * 200, 2),
         ROUND(10 + RAND() * 2000, 2),
         ROUND(5 + RAND() * 1000, 2),
@@ -132,14 +132,14 @@ WHILE @j <= 50000
 BEGIN
     INSERT INTO dbo.FactWebTraffic (DateKey, PageKey, SessionID, Country, City, PageViews, Duration, BounceFlag)
     VALUES (
-        CONVERT(INT, FORMAT(DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 365, GETDATE()), 'yyyyMMdd')),
-        (ABS(CHECKSUM(NEWID())) % 200) + 1,
+        CONVERT(INT, FORMAT(DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 365, GETDATE()), 'yyyyMMdd')),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 200) + 1,
         NEWID(),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 5) + 1, 'US','UK','Germany','France','Canada'),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 8) + 1, 'New York','London','Berlin','Paris','Toronto','Seattle','Chicago','Miami'),
-        1 + ABS(CHECKSUM(NEWID())) % 20,
-        10 + ABS(CHECKSUM(NEWID())) % 600,
-        CASE WHEN ABS(CHECKSUM(NEWID())) % 4 = 0 THEN 1 ELSE 0 END
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5) + 1, 'US','UK','Germany','France','Canada'),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 8) + 1, 'New York','London','Berlin','Paris','Toronto','Seattle','Chicago','Miami'),
+        1 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 20,
+        10 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 600,
+        CASE WHEN ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 4 = 0 THEN 1 ELSE 0 END
     );
     SET @j = @j + 1;
 END;
@@ -147,3 +147,4 @@ GO
 
 PRINT 'SQL06 - AnalyticsDB database setup complete.';
 GO
+

@@ -165,8 +165,8 @@ BEGIN
         'Contact ' + CAST(@i AS NVARCHAR(10)),
         CHOOSE((@i % 6) + 1, 'London','New York','Tokyo','Paris','Sydney','Berlin'),
         CHOOSE((@i % 6) + 1, 'UK','USA','Japan','France','Australia','Germany'),
-        '+1-555-' + RIGHT('0000' + CAST(ABS(CHECKSUM(NEWID())) % 10000 AS NVARCHAR(4)), 4),
-        (ABS(CHECKSUM(NEWID())) % 5) + 1
+        '+1-555-' + RIGHT('0000' + CAST(ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 10000 AS NVARCHAR(4)), 4),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 5) + 1
     );
     SET @i = @i + 1;
 END;
@@ -178,12 +178,12 @@ WHILE @j <= 20000
 BEGIN
     INSERT INTO dbo.Orders (CustomerID, OrderDate, RequiredDate, Freight, ShipCity, ShipCountry)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 1000) + 1,
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 1825, GETDATE()),
-        DATEADD(DAY, -ABS(CHECKSUM(NEWID())) % 1800, GETDATE()),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1000) + 1,
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1825, GETDATE()),
+        DATEADD(DAY, -ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 1800, GETDATE()),
         CAST(ROUND(5 + RAND() * 200, 2) AS MONEY),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 6) + 1, 'London','New York','Tokyo','Paris','Sydney','Berlin'),
-        CHOOSE((ABS(CHECKSUM(NEWID())) % 6) + 1, 'UK','USA','Japan','France','Australia','Germany')
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 6) + 1, 'London','New York','Tokyo','Paris','Sydney','Berlin'),
+        CHOOSE((ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 6) + 1, 'UK','USA','Japan','France','Australia','Germany')
     );
     SET @j = @j + 1;
 END;
@@ -195,11 +195,11 @@ WHILE @k <= 50000
 BEGIN
     INSERT INTO dbo.OrderDetails (OrderID, ProductName, UnitPrice, Quantity, Discount)
     VALUES (
-        (ABS(CHECKSUM(NEWID())) % 20000) + 1,
-        'Product-' + CAST(ABS(CHECKSUM(NEWID())) % 200 AS NVARCHAR(5)),
+        (ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 20000) + 1,
+        'Product-' + CAST(ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 200 AS NVARCHAR(5)),
         CAST(ROUND(5 + RAND() * 300, 2) AS MONEY),
-        1 + ABS(CHECKSUM(NEWID())) % 20,
-        CAST(CASE WHEN ABS(CHECKSUM(NEWID())) % 3 = 0 THEN ROUND(RAND() * 0.25, 2) ELSE 0 END AS REAL)
+        1 + ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 20,
+        CAST(CASE WHEN ABS(CAST(CHECKSUM(NEWID()) AS BIGINT)) % 3 = 0 THEN ROUND(RAND() * 0.25, 2) ELSE 0 END AS REAL)
     );
     SET @k = @k + 1;
 END;
@@ -217,3 +217,4 @@ GO
 
 PRINT 'SQL08 - LegacyLOB database setup complete (with migration assessment blockers).';
 GO
+

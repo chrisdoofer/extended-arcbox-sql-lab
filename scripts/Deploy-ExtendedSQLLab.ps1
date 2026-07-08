@@ -757,7 +757,7 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
             } -Credential $cred -ErrorAction SilentlyContinue
 
             if (-not $dbExists) {
-                Copy-VMFile $vmName -SourcePath $sqlSetupScript -DestinationPath "C:\ArcBox\dbsetup.sql" -CreateFullPath -FileSource Host -Force
+                Copy-VMFileWithRetry -VMName $vmName -SourcePath $sqlSetupScript -DestinationPath "C:\ArcBox\dbsetup.sql"
                 Invoke-Command -VMName $vmName -ScriptBlock {
                     try {
                         Invoke-Sqlcmd -InputFile "C:\ArcBox\dbsetup.sql" -TrustServerCertificate -QueryTimeout 300
