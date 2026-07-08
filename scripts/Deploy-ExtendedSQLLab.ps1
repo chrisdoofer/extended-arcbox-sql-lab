@@ -783,25 +783,30 @@ Write-Host "Granting APP server machine accounts access to SQL databases..."
 foreach ($app in $appServers | Select-Object -First $AppServerCount) {
     $appName = $app.Name
     $sqlTarget = $app.ConnectsTo
-    $machineAccount = "$domainNetbios\$appName$"
+    $machineAccount = "${domainNetbios}\${appName}$"
     $targetDB = ($sqlServers | Where-Object { $_.Name -eq $sqlTarget }).DB
 
     try {
         $sqlCred = Get-WorkingCredential -VMName $sqlTarget
         Invoke-Command -VMName $sqlTarget -ScriptBlock {
+            $account = $using:machineAccount
+            $db = $using:targetDB
             try {
-                $account = $using:machineAccount
-                $db = $using:targetDB
                 # Create server login if not exists
-                $existing = Invoke-Sqlcmd -Query "SELECT name FROM sys.server_principals WHERE name = '$account'" -TrustServerCertificate
-                if (-not $existing) {
-                    Invoke-Sqlcmd -Query "CREATE LOGIN [$account] FROM WINDOWS;" -TrustServerCertificate
-                }
-                # Create database user and grant permissions
-                Invoke-Sqlcmd -Query "USE [$db]; IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$account') BEGIN CREATE USER [$account] FOR LOGIN [$account]; END; ALTER ROLE db_datareader ADD MEMBER [$account]; ALTER ROLE db_datawriter ADD MEMBER [$account];" -TrustServerCertificate
+                $loginQuery = "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'$account') CREATE LOGIN [$account] FROM WINDOWS WITH DEFAULT_DATABASE = [$db];"
+                Invoke-Sqlcmd -Query $loginQuery -TrustServerCertificate -ErrorAction Stop
+
+                # Create database user if not exists
+                $userQuery = "USE [$db]; IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$account') CREATE USER [$account] FOR LOGIN [$account];"
+                Invoke-Sqlcmd -Query $userQuery -TrustServerCertificate -ErrorAction Stop
+
+                # Grant roles
+                Invoke-Sqlcmd -Query "USE [$db]; ALTER ROLE db_datareader ADD MEMBER [$account];" -TrustServerCertificate -ErrorAction Stop
+                Invoke-Sqlcmd -Query "USE [$db]; ALTER ROLE db_datawriter ADD MEMBER [$account];" -TrustServerCertificate -ErrorAction Stop
+
                 Write-Host "  Granted $account access to $db on $env:COMPUTERNAME"
             } catch {
-                Write-Warning "  Could not grant machine account on ${env:COMPUTERNAME}: $_"
+                Write-Warning "  Could not grant machine account $account on ${env:COMPUTERNAME}: $_"
             }
         } -Credential $sqlCred -ErrorAction Stop
     } catch {
