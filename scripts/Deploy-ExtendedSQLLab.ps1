@@ -100,16 +100,16 @@ function Get-WorkingCredential {
 
 # SQL Server VM definitions
 $sqlServers = @(
-    @{ Name = "$namingPrefix-SQL01"; Role = "ERP/Finance"; DB = "FinanceERP"; Port = 1433; IP = "10.10.1.101" }
-    @{ Name = "$namingPrefix-SQL02"; Role = "CRM"; DB = "ContososCRM"; Port = 1433; IP = "10.10.1.102" }
-    @{ Name = "$namingPrefix-SQL03"; Role = "HR/Payroll"; DB = "HRPayroll"; Port = 1433; IP = "10.10.1.103" }
-    @{ Name = "$namingPrefix-SQL04"; Role = "Inventory/WMS"; DB = "InventoryWMS"; Port = 1433; IP = "10.10.1.104" }
-    @{ Name = "$namingPrefix-SQL05"; Role = "E-Commerce"; DB = "ECommerceStore"; Port = 1433; IP = "10.10.1.105" }
-    @{ Name = "$namingPrefix-SQL06"; Role = "Analytics"; DB = "AnalyticsDB"; Port = 1433; IP = "10.10.1.116" }
-    @{ Name = "$namingPrefix-SQL07"; Role = "Document Mgmt"; DB = "DocumentMgmt"; Port = 1433; IP = "10.10.1.117" }
-    @{ Name = "$namingPrefix-SQL08"; Role = "Legacy LOB"; DB = "LegacyLOB"; Port = 1433; IP = "10.10.1.118" }
-    @{ Name = "$namingPrefix-SQL09"; Role = "DevTest"; DB = "AppDev_v2"; Port = 1433; IP = "10.10.1.119" }
-    @{ Name = "$namingPrefix-SQL10"; Role = "Compliance"; DB = "ComplianceAudit"; Port = 1433; IP = "10.10.1.120" }
+    @{ Name = "$namingPrefix-SQL01"; Role = "ERP/Finance"; DB = "FinanceERP"; Port = 1433; IP = "10.10.1.101"; SetupScript = "01-FinanceERP.sql" }
+    @{ Name = "$namingPrefix-SQL02"; Role = "CRM"; DB = "ContososCRM"; Port = 1433; IP = "10.10.1.102"; SetupScript = "02-CRM.sql" }
+    @{ Name = "$namingPrefix-SQL03"; Role = "HR/Payroll"; DB = "HRPayroll"; Port = 1433; IP = "10.10.1.103"; SetupScript = "03-HRPayroll.sql" }
+    @{ Name = "$namingPrefix-SQL04"; Role = "Inventory/WMS"; DB = "InventoryWMS"; Port = 1433; IP = "10.10.1.104"; SetupScript = "04-InventoryWMS.sql" }
+    @{ Name = "$namingPrefix-SQL05"; Role = "E-Commerce"; DB = "ECommerceStore"; Port = 1433; IP = "10.10.1.105"; SetupScript = "05-ECommerce.sql" }
+    @{ Name = "$namingPrefix-SQL06"; Role = "Analytics"; DB = "AnalyticsDB"; Port = 1433; IP = "10.10.1.116"; SetupScript = "06-Analytics.sql" }
+    @{ Name = "$namingPrefix-SQL07"; Role = "Document Mgmt"; DB = "DocumentMgmt"; Port = 1433; IP = "10.10.1.117"; SetupScript = "07-DocumentMgmt.sql" }
+    @{ Name = "$namingPrefix-SQL08"; Role = "Legacy LOB"; DB = "LegacyLOB"; Port = 1433; IP = "10.10.1.118"; SetupScript = "08-LegacyLOB.sql" }
+    @{ Name = "$namingPrefix-SQL09"; Role = "DevTest"; DB = "AppDev_v2"; Port = 1433; IP = "10.10.1.119"; SetupScript = "09-DevTest.sql" }
+    @{ Name = "$namingPrefix-SQL10"; Role = "Compliance"; DB = "ComplianceAudit"; Port = 1433; IP = "10.10.1.120"; SetupScript = "10-ComplianceAudit.sql" }
 )
 
 # App Server VM definitions
@@ -709,7 +709,13 @@ Write-Header "Configuring SQL Server Instances and Databases"
 # Create SQL data directory on each VM
 foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
     $vmName = $sql.Name
-    $sqlSetupScript = "$ExtendedLabDir\$($sql.DB).sql"
+    $targetDB = $sql.DB
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $sqlSetupScript = Join-Path $repoRoot "sql-setup\$($sql.SetupScript)"
+    # Fallback: check ExtendedLabDir for backward compatibility
+    if (-not (Test-Path $sqlSetupScript)) {
+        $sqlSetupScript = "$ExtendedLabDir\$($sql.DB).sql"
+    }
 
     try {
         Write-Host "Configuring $vmName - $($sql.Role)..."
@@ -744,15 +750,27 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
 
         # Copy and execute database setup script
         if (Test-Path $sqlSetupScript) {
-            Copy-VMFile $vmName -SourcePath $sqlSetupScript -DestinationPath "C:\ArcBox\dbsetup.sql" -CreateFullPath -FileSource Host -Force
-            Invoke-Command -VMName $vmName -ScriptBlock {
-                try {
-                    Invoke-Sqlcmd -InputFile "C:\ArcBox\dbsetup.sql" -TrustServerCertificate -QueryTimeout 300
-                    Write-Host "Database setup complete on $env:COMPUTERNAME"
-                } catch {
-                    Write-Warning "Database setup error: $_"
-                }
-            } -Credential $cred -ErrorAction Stop
+            # Check if database already exists
+            $dbExists = Invoke-Command -VMName $vmName -ScriptBlock {
+                $result = Invoke-Sqlcmd -Query "SELECT name FROM sys.databases WHERE name = '$using:targetDB'" -TrustServerCertificate -ErrorAction SilentlyContinue
+                return [bool]$result
+            } -Credential $cred -ErrorAction SilentlyContinue
+
+            if (-not $dbExists) {
+                Copy-VMFile $vmName -SourcePath $sqlSetupScript -DestinationPath "C:\ArcBox\dbsetup.sql" -CreateFullPath -FileSource Host -Force
+                Invoke-Command -VMName $vmName -ScriptBlock {
+                    try {
+                        Invoke-Sqlcmd -InputFile "C:\ArcBox\dbsetup.sql" -TrustServerCertificate -QueryTimeout 300
+                        Write-Host "  Database created on $env:COMPUTERNAME"
+                    } catch {
+                        Write-Warning "Database setup error: $_"
+                    }
+                } -Credential $cred -ErrorAction Stop
+            } else {
+                Write-Host "  Database $($sql.DB) already exists on $vmName."
+            }
+        } else {
+            Write-Warning "  SQL setup script not found: $sqlSetupScript"
         }
 
         # Grant domain admin sysadmin permissions on SQL Server
