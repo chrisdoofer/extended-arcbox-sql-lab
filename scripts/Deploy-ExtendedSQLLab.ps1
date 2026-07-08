@@ -137,8 +137,8 @@ function Copy-VMFileWithRetry {
         [string]$VMName,
         [string]$SourcePath,
         [string]$DestinationPath,
-        [int]$MaxAttempts = 3,
-        [int]$DelaySeconds = 10
+        [int]$MaxAttempts = 5,
+        [int]$DelaySeconds = 15
     )
     for ($i = 1; $i -le $MaxAttempts; $i++) {
         try {
@@ -147,6 +147,13 @@ function Copy-VMFileWithRetry {
         } catch {
             if ($i -eq $MaxAttempts) { throw }
             Write-Host "    Copy-VMFile attempt $i failed for $VMName, retrying in ${DelaySeconds}s..." -ForegroundColor DarkYellow
+            # Restart Guest Service Interface on the VM to recover from stuck state
+            if ($i -ge 2) {
+                Write-Host "    Restarting Guest Service Interface on $VMName..." -ForegroundColor DarkYellow
+                Disable-VMIntegrationService -VMName $VMName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+                Enable-VMIntegrationService -VMName $VMName -Name 'Guest Service Interface' -ErrorAction SilentlyContinue
+            }
             Start-Sleep -Seconds $DelaySeconds
         }
     }
