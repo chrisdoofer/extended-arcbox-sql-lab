@@ -776,6 +776,38 @@ foreach ($sql in $sqlServers | Select-Object -First $SqlServerCount) {
         Write-Warning "Error configuring ${vmName}: $_"
     }
 }
+
+# Grant APP server machine accounts access to their target SQL databases
+Write-Host ""
+Write-Host "Granting APP server machine accounts access to SQL databases..."
+foreach ($app in $appServers | Select-Object -First $AppServerCount) {
+    $appName = $app.Name
+    $sqlTarget = $app.ConnectsTo
+    $machineAccount = "$domainNetbios\$appName$"
+    $targetDB = ($sqlServers | Where-Object { $_.Name -eq $sqlTarget }).DB
+
+    try {
+        $sqlCred = Get-WorkingCredential -VMName $sqlTarget
+        Invoke-Command -VMName $sqlTarget -ScriptBlock {
+            try {
+                $account = $using:machineAccount
+                $db = $using:targetDB
+                # Create server login if not exists
+                $existing = Invoke-Sqlcmd -Query "SELECT name FROM sys.server_principals WHERE name = '$account'" -TrustServerCertificate
+                if (-not $existing) {
+                    Invoke-Sqlcmd -Query "CREATE LOGIN [$account] FROM WINDOWS;" -TrustServerCertificate
+                }
+                # Create database user and grant permissions
+                Invoke-Sqlcmd -Query "USE [$db]; IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$account') BEGIN CREATE USER [$account] FOR LOGIN [$account]; END; ALTER ROLE db_datareader ADD MEMBER [$account]; ALTER ROLE db_datawriter ADD MEMBER [$account];" -TrustServerCertificate
+                Write-Host "  Granted $account access to $db on $env:COMPUTERNAME"
+            } catch {
+                Write-Warning "  Could not grant machine account on ${env:COMPUTERNAME}: $_"
+            }
+        } -Credential $sqlCred -ErrorAction Stop
+    } catch {
+        Write-Warning "  Failed to configure machine account for ${appName} on ${sqlTarget}: $_"
+    }
+}
 #endregion
 
 #region Configure Application Servers
