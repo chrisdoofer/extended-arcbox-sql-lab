@@ -817,6 +817,13 @@ foreach ($app in $appServers | Select-Object -First $AppServerCount) {
             $account = $using:machineAccount
             $db = $using:targetDB
             try {
+                # Check if target database exists first
+                $dbCheck = Invoke-Sqlcmd -Query "SELECT name FROM sys.databases WHERE name = N'$db'" -TrustServerCertificate -ErrorAction Stop
+                if (-not $dbCheck) {
+                    Write-Warning "  Database '$db' does not exist on $env:COMPUTERNAME - skipping machine account grant"
+                    return
+                }
+
                 # Create server login if not exists
                 $loginQuery = "IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'$account') CREATE LOGIN [$account] FROM WINDOWS WITH DEFAULT_DATABASE = [$db];"
                 Invoke-Sqlcmd -Query $loginQuery -TrustServerCertificate -ErrorAction Stop
